@@ -2,11 +2,16 @@
 
 from twisted.web import server, resource
 from twisted.internet import reactor, defer
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import logging
 import binascii
 import json
 import os
 import math
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
 
 logger = logging.getLogger('root')
 FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
@@ -27,8 +32,53 @@ CATALOG = { '898a08080d1840793122b7e118b27a95d117ebce':
 CATALOG_BASE = 'catalog'
 CHUNK_SIZE = 1024 * 4
 
+CLIENT_INFO = {}
+
 class MediaServer(resource.Resource):
     isLeaf = True
+
+    def cipher(self, algorithm, mode, key, data):
+        #depende do modo
+        iv = os.urandom(16)
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+        encryptor = cipher.encryptor()
+        ct = encryptor.update(b"a secret message") + encryptor.finalize()
+
+    def get_key(self, request):
+        print("test")
+        private_key = ec.generate_private_key(ec.SECP384R1())
+
+        CLIENT_INFO[request.client.host] = {'dh_private_key':private_key}
+        public_key = private_key.public_key()
+
+        serialized_public = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+        response = {'key': binascii.b2a_base64(serialized_public).decode('latin').strip()}
+        request.responseHeaders.addRawHeader(b"content-type", b"application/json")
+        return json.dumps(response).encode('latin')
+
+    def post_key(self, request):
+        response = json.loads(request.content.read())
+
+        client_public_key = binascii.a2b_base64(response['key'].encode('latin'))
+
+        loaded_public_key = serialization.load_pem_public_key(client_public_key,)
+
+        shared_key = CLIENT_INFO[request.client.host]['dh_private_key'].exchange(ec.ECDH(), loaded_public_key)
+
+        MESSAGE_KEY = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',).derive(shared_key)
+        
+        print(MESSAGE_KEY)
+        request.setResponseCode(200)
+        request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
+        return b''
+
 
     # Send the list of media files to clients
     def do_list(self, request):
@@ -122,12 +172,14 @@ class MediaServer(resource.Resource):
     def render_GET(self, request):
         logger.debug(f'Received request for {request.uri}')
 
+
         try:
             if request.path == b'/api/protocols':
                 return self.do_get_protocols(request)
-            #elif request.uri == 'api/key':
-            #...
-            #elif request.uri == 'api/auth':
+            elif request.path == b'/api/key':
+                return self.get_key(request)
+
+            #elif request.uri == '/api/auth':
 
             elif request.path == b'/api/list':
                 return self.do_list(request)
@@ -147,8 +199,21 @@ class MediaServer(resource.Resource):
     # Handle a POST request
     def render_POST(self, request):
         logger.debug(f'Received POST for {request.uri}')
-        request.setResponseCode(501)
-        return b''
+        try:
+            if request.path == b'/api/protocols':
+                return self.do_get_protocols(request)
+            elif request.path == b'/api/key':
+                return self.post_key(request)
+
+            else:
+                request.responseHeaders.addRawHeader(b"content-type", b'text/plain')
+                return b'Methods: /api/protocols /api/key'
+
+        except Exception as e:
+            logger.exception(e)
+            request.setResponseCode(500)
+            request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
+            return b''
 
 
 print("Server started")
