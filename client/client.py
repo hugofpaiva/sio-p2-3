@@ -19,6 +19,10 @@ logger.setLevel(logging.INFO)
 
 SERVER_URL = 'http://127.0.0.1:8080'
 
+algorithms_options = [algorithms.AES, algorithms.Camellia, algorithms.ChaCha20]
+hashes_options = [hashes.SHA256, hashes.SHA512, hashes.SHA3_256, hashes.SHA3_512]
+cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
+
 
 
 
@@ -27,10 +31,43 @@ def main():
     print("|         SECURE MEDIA CLIENT          |")
     print("|--------------------------------------|\n")
 
+    
     MESSAGE_KEY = None
-    # Get a list of media files
+    # Choosing options
+    print("\n|         Algorithms Options         |")
+    print("1. AES")
+    print("2. Camellia")
+    print("3. ChaCha20")
+    alg = int(input("Select the number corresponding to the algorithm option: "))
+
+    print("\n|         Hash Options         |")
+    print("1. SHA3_256")
+    print("2. SHA3_512")
+    print("3. SHA256")
+    print("4. SHA512")
+    hash = int(input("Select the number corresponding to the hash option: "))
+
+    print("\n|         Cipher Mode Options         |")
+    print("1. CTR")
+    print("2. CBC")
+    print("3. OFB")
+    print("4. CFB")
+    mode = int(input("Select the number corresponding to the cipher mode option: "))
+
+    selected_algorithm = alg-1
+    selected_hash = hash-1
+    selected_mode = mode-1
+
+    selected_options = {'algorithm': alg-1, 'hash': hash-1, 'mode': mode-1}
+
     print("Contacting Server")
 
+    req = requests.post(f'{SERVER_URL}/api/protocols', data=json.dumps(selected_options).encode('latin'), headers={"content-type": "application/json"})
+
+    if req.status_code != 200:
+        quit()
+
+    # DH Exchange
     private_key = ec.generate_private_key(ec.SECP384R1())
 
     while MESSAGE_KEY is None:
@@ -45,8 +82,8 @@ def main():
             shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
             MESSAGE_KEY = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
+                algorithm=hashes_options[selected_hash](),
+                length=32, #256 bits
                 salt=None,
                 info=b'handshake data',).derive(shared_key)
 
@@ -63,15 +100,24 @@ def main():
     req = requests.post(f'{SERVER_URL}/api/key', data=json.dumps(response).encode('latin'), headers={"content-type": "application/json"})
 
     if req.status_code != 200:
-        print("deu bosta")
         quit()
 
-    print(MESSAGE_KEY)
+    req = requests.get(f'{SERVER_URL}/api/protocols')
+    if req.status_code != 200:
+        quit()
+    else:
+        response = req.json()
+        if(selected_algorithm != response['selected_algorithm'] or selected_hash != response['selected_hash'] or selected_mode != response['selected_mode']):
+            print("MITM???")
+            quit()
+        
+    
     
 
 
     # TODO: Secure the session
-
+    
+    # Get a list of media files
     req = requests.get(f'{SERVER_URL}/api/list')
     if req.status_code == 200:
         print("Got Server List")
@@ -125,12 +171,15 @@ def main():
             break
 
 
-def cipher(algorithm, mode, key, data):
-    # depende do modo
+def encryptor(algorithm, mode, key, data):
     iv = os.urandom(16)
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    cipher = Cipher(algorithm(key), mode(iv))
     encryptor = cipher.encryptor()
-    ct = encryptor.update(b"a secret message") + encryptor.finalize()
+    ct = encryptor.update(data) + encryptor.finalize()
+    return ct
+
+def decryptor(algorithm, mode, key, data):
+    pass
 
 
 if __name__ == '__main__':

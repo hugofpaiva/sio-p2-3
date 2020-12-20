@@ -32,23 +32,25 @@ CATALOG = { '898a08080d1840793122b7e118b27a95d117ebce':
 CATALOG_BASE = 'catalog'
 CHUNK_SIZE = 1024 * 4
 
+algorithms_options = [algorithms.AES, algorithms.Camellia, algorithms.ChaCha20]
+hashes_options = [hashes.SHA256, hashes.SHA512, hashes.SHA3_256, hashes.SHA3_512]
+cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
+
 CLIENT_INFO = {}
 
 class MediaServer(resource.Resource):
     isLeaf = True
 
     def cipher(self, algorithm, mode, key, data):
-        #depende do modo
         iv = os.urandom(16)
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
         encryptor = cipher.encryptor()
         ct = encryptor.update(b"a secret message") + encryptor.finalize()
 
     def get_key(self, request):
-        print("test")
         private_key = ec.generate_private_key(ec.SECP384R1())
 
-        CLIENT_INFO[request.client.host] = {'dh_private_key':private_key}
+        CLIENT_INFO[request.client.host]['dh_private_key'] = private_key
         public_key = private_key.public_key()
 
         serialized_public = public_key.public_bytes(
@@ -74,11 +76,29 @@ class MediaServer(resource.Resource):
             salt=None,
             info=b'handshake data',).derive(shared_key)
         
-        print(MESSAGE_KEY)
+        CLIENT_INFO[request.client.host]['message_key'] = MESSAGE_KEY
+
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
         return b''
 
+    def do_post_protocols(self, request):
+        response = json.loads(request.content.read())
+
+        CLIENT_INFO[request.client.host] = {}
+        CLIENT_INFO[request.client.host]['options'] = {}
+        CLIENT_INFO[request.client.host]['options']['selected_algorithm'] = response['algorithm']
+        CLIENT_INFO[request.client.host]['options']['selected_hash'] = response['hash']
+        CLIENT_INFO[request.client.host]['options']['selected_mode'] = response['mode']
+
+
+        request.setResponseCode(200)
+        request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
+        return b''
+
+    def do_get_protocols(self, request):
+        request.responseHeaders.addRawHeader(b"content-type", b"application/json")
+        return json.dumps(CLIENT_INFO[request.client.host]['options']).encode('latin')
 
     # Send the list of media files to clients
     def do_list(self, request):
@@ -171,11 +191,10 @@ class MediaServer(resource.Resource):
     # Handle a GET request
     def render_GET(self, request):
         logger.debug(f'Received request for {request.uri}')
-
-
         try:
             if request.path == b'/api/protocols':
                 return self.do_get_protocols(request)
+
             elif request.path == b'/api/key':
                 return self.get_key(request)
 
@@ -186,6 +205,7 @@ class MediaServer(resource.Resource):
 
             elif request.path == b'/api/download':
                 return self.do_download(request)
+
             else:
                 request.responseHeaders.addRawHeader(b"content-type", b'text/plain')
                 return b'Methods: /api/protocols /api/list /api/download'
@@ -201,7 +221,8 @@ class MediaServer(resource.Resource):
         logger.debug(f'Received POST for {request.uri}')
         try:
             if request.path == b'/api/protocols':
-                return self.do_get_protocols(request)
+                return self.do_post_protocols(request)
+
             elif request.path == b'/api/key':
                 return self.post_key(request)
 
