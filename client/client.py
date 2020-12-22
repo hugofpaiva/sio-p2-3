@@ -12,6 +12,10 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import padding
+
+import random
+
 
 logger = logging.getLogger('root')
 FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
@@ -20,8 +24,8 @@ logger.setLevel(logging.INFO)
 
 SERVER_URL = 'http://127.0.0.1:8080'
 
-algorithms_options = [algorithms.AES, algorithms.Camellia, algorithms.ChaCha20]
-hashes_options = [hashes.SHA256, hashes.SHA512, hashes.SHA3_256, hashes.SHA3_512]
+algorithms_options = [algorithms.AES, algorithms.Camellia]
+hashes_options = [hashes.SHA256, hashes.SHA3_256]
 cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
 
 
@@ -32,63 +36,98 @@ def main():
     print("|         SECURE MEDIA CLIENT          |")
     print("|--------------------------------------|\n")
 
-    
     MESSAGE_KEY = None
+    DIGEST_KEY = None
+
+    selected_algorithm = None
+    selected_hash = None
+    selected_mode = None
+    
     # Choosing options
-    print("\n|         Algorithms Options         |")
-    print("1. AES")
-    print("2. Camellia")
-    print("3. ChaCha20")
-    alg = int(input("Select the number corresponding to the algorithm option: "))
+    #Algorithm Option
+    #0. AES
+    #1. Camellia
+    #2. ChaCha20
+    print("Generating Algorithms Options...")
+    algs = []
+    num_opt_alg = random.randint(1, len(algorithms_options))
+    for i in range(0, num_opt_alg):
+        rand = random.randint(0,len(algorithms_options)-1)
+        while rand in algs:
+            rand = random.randint(0,len(algorithms_options)-1)    
+        algs.append(rand)
+    
+    #Hash Option
+    #0 SHA3_256
+    #1 SHA3_512
+    #2 SHA256
+    #3 SHA512
+    print("Generating Hash Options...")
+    hashes = []
+    num_opt_hash = random.randint(1, len(hashes_options))
+    for i in range(0, num_opt_hash):
+        rand = random.randint(0,len(hashes_options)-1)
+        while rand in hashes:
+            rand = random.randint(0,len(hashes_options)-1)    
+        hashes.append(rand)
 
-    print("\n|         Hash Options         |")
-    print("1. SHA3_256")
-    print("2. SHA3_512")
-    print("3. SHA256")
-    print("4. SHA512")
-    hash = int(input("Select the number corresponding to the hash option: "))
+    #Cipher Mode
+    #0.CTR
+    #1.CBC
+    #2.OFB
+    #3.CFB
+    print("Generating Cipher Mode Options...")
+    modes = []
+    num_opt_modes = random.randint(1, len(cipher_modes_options))
+    for i in range(0, num_opt_modes):
+        rand = random.randint(0,len(cipher_modes_options)-1)
+        while rand in modes:
+            rand = random.randint(0,len(cipher_modes_options)-1)    
+        modes.append(rand)
 
-    print("\n|         Cipher Mode Options         |")
-    print("1. CTR")
-    print("2. CBC")
-    print("3. OFB")
-    print("4. CFB")
-    mode = int(input("Select the number corresponding to the cipher mode option: "))
 
-    selected_algorithm = alg-1
-    selected_hash = hash-1
-    selected_mode = mode-1
 
-    selected_options = {'algorithm': alg-1, 'hash': hash-1, 'mode': mode-1}
+    available_options = {'algorithms': algs, 'hashes': hashes, 'modes': modes}
 
-    print("Contacting Server")
+    print("\nContacting Server")
 
-    req = requests.post(f'{SERVER_URL}/api/protocols', data=json.dumps(selected_options).encode('latin'), headers={"content-type": "application/json"})
+    req = requests.post(f'{SERVER_URL}/api/protocols', data=json.dumps(available_options).encode('latin'), headers={"content-type": "application/json"})
 
     if req.status_code != 200:
+        print("Trading options error")
         quit()
+    else:
+        response = req.json()
+        selected_algorithm = response['selected_algorithm'] 
+        print(selected_algorithm)
+        selected_hash = response['selected_hash'] 
+        selected_mode = response['selected_mode'] 
+        print(selected_mode)
+
 
     # DH Exchange
     private_key = ec.generate_private_key(ec.SECP384R1())
 
-    while MESSAGE_KEY is None:
-        req = requests.get(f'{SERVER_URL}/api/key')
-        if req.status_code == 200:
-            response = req.json()
 
-            server_public_key = binascii.a2b_base64(response['key'].encode('latin'))
+    req = requests.get(f'{SERVER_URL}/api/key')
+    if req.status_code == 200:
+        response = req.json()
 
-            loaded_public_key = serialization.load_pem_public_key(server_public_key,)
+        server_public_key = binascii.a2b_base64(response['key'].encode('latin'))
 
-            shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
+        loaded_public_key = serialization.load_pem_public_key(server_public_key,)
 
-            MESSAGE_KEY = HKDF(
-                algorithm=hashes_options[selected_hash](),
-                length=32, #256 bits consoante o algoritmo
-                salt=None, #osrandom
-                info=b'handshake data',).derive(shared_key)
+        shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
-        time.sleep(5)
+        MESSAGE_KEY = HKDF(
+            algorithm=hashes_options[selected_hash](),
+            length=32, #256 bits consoante o algoritmo
+            salt=None, #osrandom
+            info=b'handshake data',).derive(shared_key)
+
+        print("MESSAGE KEY")
+        print(MESSAGE_KEY)
+
 
     public_key = private_key.public_key()
 
@@ -103,20 +142,60 @@ def main():
     if req.status_code != 200:
         quit()
 
+    # DH Digest Key Exchange
+    req = requests.get(f'{SERVER_URL}/api/digest_key')
+    if req.status_code == 200:
+        response = req.json()
+
+        server_public_key = binascii.a2b_base64(response['key'].encode('latin'))
+
+        loaded_public_key = serialization.load_pem_public_key(server_public_key,)
+
+        shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
+
+        DIGEST_KEY = HKDF(
+            algorithm=hashes_options[selected_hash](),
+            length=32, #256 bits consoante o algoritmo
+            salt=None, #osrandom
+            info=b'handshake data',).derive(shared_key)
+
+        print("DIGEST KEY")
+        print(DIGEST_KEY)
+
+
+    public_key = private_key.public_key()
+
+    serialized_public = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+    response = {'key': binascii.b2a_base64(serialized_public).decode('latin').strip()}
+
+    req = requests.post(f'{SERVER_URL}/api/digest_key', data=json.dumps(response).encode('latin'), headers={"content-type": "application/json"})
+
+    if req.status_code != 200:
+        quit()
+
     req = requests.get(f'{SERVER_URL}/api/protocols')
     if req.status_code != 200:
         quit()
     else:
         response = req.json()
-        if(selected_algorithm != response['selected_algorithm'] or selected_hash != response['selected_hash'] or selected_mode != response['selected_mode']):
+        digest = response['digest'].encode('latin')
+        options = response['options'].encode('latin')
+        iv = response['iv'].encode('latin')
+
+        options = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, options, iv)
+
+        if verify_digest(DIGEST_KEY, selected_hash, options, digest):
+            options = json.loads(options.decode('latin'))
+            if(selected_algorithm != options['selected_algorithm'] or selected_hash != options['selected_hash'] or selected_mode != options['selected_mode']):
+                print("MITM???")
+                quit()
+        else:
             print("MITM???")
             quit()
-        
-    
-    
 
-
-    # TODO: Secure the session
     
     # Get a list of media files
     req = requests.get(f'{SERVER_URL}/api/list')
@@ -172,53 +251,49 @@ def main():
             break
 
 
-def encryptor(algorithm, mode, key, data, encryptor=None, block_size=0):
-    if encryptor:
-        if mode == modes.CBC:
-            if len(data) < block_size:
-                diff=block_size-len(data)
-                data+=bytes([diff]*diff) #padding
-                ct=encryptor.update(data) + encryptor.finalize()
+def encryptor(algorithm, mode, key, data, encryptor=None, block_size=None):
+        if encryptor:
+            if mode == 1:
+                padder = padding.PKCS7(block_size).padder()
+                padded_data = padder.update(data)
+                padded_data += padder.finalize()
+                ct = encryptor.update(data) + encryptor.finalize()
             else:
-                ct = encryptor.update(data)
-        else: 
-            ct = encryptor.update(data) + encryptor.finalize()
-    else:     
-        iv = os.urandom(16) #TODO Generate through secret module, also verify if all algorithms used are 128bits to generate only 16 bytes
-        if algorithm == 2:
-            iv_chacha = os.urandom(16)
-            algorithm = algorithms.ChaCha20(key, iv_chacha)
-        elif algorithm == 0 or algorithm == 1:
-            algorithm = algorithms_options[algorithm](key)
+                ct = encryptor.update(data) + encryptor.finalize()
+            return ct, encryptor
         else:
-            print("Incorrect algorithm")
-            quit()
-        cipher = Cipher(algorithm, cipher_modes_options[mode](iv))
-        encryptor = cipher.encryptor()
-        ct = encryptor.update(data) + encryptor.finalize()
-    return ct, encryptor
+            # TODO Generate through secret module, also verify if all algorithms used are 128bits to generate only 16 bytes
+            iv = os.urandom(16)
+            algorithm = algorithms_options[algorithm](key)
+            cipher = Cipher(algorithm, cipher_modes_options[mode](iv))
+            encryptor = cipher.encryptor()
+            if mode == 1:
+                padder = padding.PKCS7(algorithms_options[algorithm].block_size*8).padder()
+                padded_data = padder.update(data)
+                padded_data += padder.finalize()
+                ct = encryptor.update(data) + encryptor.finalize()
+            else:
+                ct = encryptor.update(data) + encryptor.finalize()
+            return ct, encryptor, iv
 
-def decryptor(algorithm, mode, key, data):
-    iv = os.urandom(16)
-    if algorithm == 2:
-        iv_chacha = os.urandom(16)
-        algorithm = algorithms.ChaCha20(key, iv_chacha)
-    elif algorithm == 0 or algorithm == 1:
+def decryptor(algorithm, mode, key, data, iv):
+    if algorithm == 0 or algorithm == 1:
         algorithm = algorithms_options[algorithm](key)
     cipher = Cipher(algorithm, cipher_modes_options[mode](iv))
     decryptor = cipher.decryptor()
     return decryptor.update(data)
 
+
 def digest(key, hash, data):
-    h = hmac.HMAC(key, hashes_options[hash]) #. The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
+    h = hmac.HMAC(key, hashes_options[hash]()) #. The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
     h.update(data)
     return h.finalize()
 
-def verify_digest(key, hash, data):
-    h = hmac.HMAC(key, hashes_options[hash]) #. The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
+def verify_digest(key, hash, data, digest):
+    h = hmac.HMAC(key, hashes_options[hash]()) #. The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
     h.update(data)
     try:
-        h.verify()
+        h.verify(digest)
         return True
     except InvalidSignature:
         return False
