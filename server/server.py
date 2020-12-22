@@ -292,8 +292,6 @@ class MediaServer(resource.Resource):
 
             data = binascii.b2a_base64(data)
 
-            inital_data = data
-
             encryptor_cypher = CLIENT_INFO[request.client.host]['encryptor']
 
             digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],

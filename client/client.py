@@ -240,7 +240,7 @@ def main():
     decryptor_var = None
 
     # Get data from server and send it to the ffplay stdin through a pipe
-    for chunk_id in range(media_item['chunks'] + 1):
+    for chunk_id in range(media_item['chunks']):
         req = requests.get(
             f'{SERVER_URL}/api/download?id={media_item["id"]}&chunk={chunk_id}')
         chunk = req.json()
