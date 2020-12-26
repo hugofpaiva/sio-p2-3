@@ -197,11 +197,11 @@ class MediaServer(resource.Resource):
         options = json.dumps(
             CLIENT_INFO[request.client.host]['options']).encode('latin')
 
-        options_digest = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
-                                     CLIENT_INFO[request.client.host]['options']['selected_hash'], options)
-
         options, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
                                                        ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], options)
+
+        options_digest = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
+                                     CLIENT_INFO[request.client.host]['options']['selected_hash'], options)
 
         # To use later
         CLIENT_INFO[request.client.host]['encryptor'] = None
@@ -294,11 +294,11 @@ class MediaServer(resource.Resource):
 
             encryptor_cypher = CLIENT_INFO[request.client.host]['encryptor']
 
-            digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
-                                      CLIENT_INFO[request.client.host]['options']['selected_hash'], data)
-
             data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
                                                         ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
+
+            digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
+                                      CLIENT_INFO[request.client.host]['options']['selected_hash'], data)
 
             if chunk_id != totalchunks:
                 CLIENT_INFO[request.client.host]['encryptor'] = encryptor_cypher

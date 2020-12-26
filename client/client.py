@@ -186,9 +186,9 @@ def main():
         iv = response['iv'].encode('latin')
         print(options)
 
-        options, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, options, iv)
-
         if verify_digest(DIGEST_KEY, selected_hash, options, digest):
+            options, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, options, iv)
+        
             options = json.loads(options.decode('latin'))
             if(selected_algorithm != options['selected_algorithm'] or selected_hash != options['selected_hash'] or selected_mode != options['selected_mode']):
                 print("MITM???")
@@ -247,22 +247,19 @@ def main():
 
         if chunk_id == 0:
             iv = chunk['iv'].encode('latin')
-
-        print("Chunk_Id - " + str(chunk_id) + "\n Chunk - "+ str(chunk))
             
         digest = chunk['digest'].encode('latin')
 
         data = chunk['data'].encode('latin')
 
-        if decryptor_var:
-            data, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, data, decryptor=decryptor_var)
-        else:
-            data, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, data, iv)
-
-
         if not verify_digest(DIGEST_KEY, selected_hash, data, digest):
             print("MITM???")
             quit()
+
+        if decryptor_var:
+            data, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, data, decryptor=decryptor_var)
+        else:
+            data, decryptor_var = decryptor(selected_algorithm,selected_mode, MESSAGE_KEY, data, iv)     
 
         data = binascii.a2b_base64(data)
 
