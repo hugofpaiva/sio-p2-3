@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography import x509
@@ -44,6 +45,13 @@ hashes_options = [hashes.SHA256, hashes.SHA3_256]
 cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
 
 CLIENT_INFO = {}
+
+server_cert = None
+
+def load_cert(path):
+        with open(path, 'rb') as f:
+            cert_data = f.read()
+            return x509.load_pem_x509_certificate(cert_data)
 
 
 class MediaServer(resource.Resource):
@@ -121,6 +129,13 @@ class MediaServer(resource.Resource):
             return True
         except InvalidSignature:
             return False
+
+    def get_auth(self, request):
+        response = {'certificate': binascii.b2a_base64(
+            server_cert.public_bytes(Encoding.PEM)).decode('latin').strip()}
+        request.responseHeaders.addRawHeader(
+            b"content-type", b"application/json")
+        return json.dumps(response).encode('latin')
 
     def get_key(self, request):
         private_key = ec.generate_private_key(ec.SECP384R1())
@@ -359,7 +374,8 @@ class MediaServer(resource.Resource):
             elif request.path == b'/api/logout':
                 return self.logout(request)
 
-            # elif request.uri == '/api/auth':
+            elif request.path == b'/api/auth':
+                return self.get_auth(request)
 
             elif request.path == b'/api/list':
                 return self.do_list(request)
@@ -408,11 +424,8 @@ class MediaServer(resource.Resource):
 print("Server started")
 print("URL is: http://IP:8080")
 
-with open('../xca/server-localhost.crt', 'rb') as f:
-    cert_data = f.read()
-    cert = x509.load_pem_x509_certificate(cert_data)
-print(cert.subject)
-print(cert.issuer)
+server_cert = load_cert('../xca/server-localhost.crt')
+
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)
 reactor.run()
