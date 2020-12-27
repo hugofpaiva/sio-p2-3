@@ -16,7 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography import x509
-from cryptography.x509.oid import ExtendedKeyUsageOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from datetime import datetime
 
 import random
@@ -36,13 +36,19 @@ cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
 
 class Client:
     def __init__(self):
-        MESSAGE_KEY = None
-        DIGEST_KEY = None
-        selected_algorithm = None
-        selected_hash = None
-        selected_mode = None
-        self.root_ca_cert = self.load_cert('../xca/SIO_CA_1.crt')
+        self.MESSAGE_KEY = None
+        self.DIGEST_KEY = None
+        self.selected_algorithm = None
+        self.selected_hash = None
+        self.selected_mode = None
+        self.root_ca_cert = self.load_cert('../server_certs/SIO_CA_1.crt')
         self.server_cert = None
+        #
+        self.cadeia_cert0 = None
+        self.session = None
+        self.private_key = None
+        self.user_cc = None
+        self.cc_cert = None
 
     def load_cert(self, path):
         with open(path, 'rb') as f:
@@ -86,28 +92,26 @@ class Client:
         else:
             return True
 
-
-    # Verificar cc introduzido
-    def verify_cc(self):
+    def get_cc(self):
+        # Verificar cc 
         try:
-            #TODO Fazer verificação para saber qual o OS
-            lib = '/usr/local/lib/libpteidpkcs11.dylib'
+            lib = '/usr/local/lib/libpteidpkcs11.so'
+
+            if sys.platform.startswith('darwin'):
+                lib = '/usr/local/lib/libpteidpkcs11.dylib'
             pkcs11 = PyKCS11.PyKCS11Lib()
             pkcs11.load(lib)
-            slots = pkcs11.getSlotList()
+            slot_list = pkcs11.getSlotList()
     
-            for slot in slots:
-                print(pkcs11.getTokenInfo(slot))
-    
-            if len(slots) != 0:
-                return slots, pkcs11
+            #Agora que está tudo numa função esta condição parece-me desnecessária
+            #if len(slots) != 0:
+               # slot_list = slots
+
+
     
         except:
             print("ERRO VERIFY_CC")
-
-    def read_cc(self):
-        # Verificar cc 
-        slots, pkcs11 = self.verify_cc()
+            quit()
         
         #for slot in slots:
             #pass
@@ -119,20 +123,20 @@ class Client:
             if isinstance(elem, int):
                 all_attr.append(elem)
     
-        cadeia_cert = []
+        cadeia_certs = []
     
         session = pkcs11.openSession(slot)
     
-        user = ""
+        cur_user = None
     
         for obj in session.findObjects():
             attr = session.getAttributeValue(obj, all_attr)
             attr = dict(zip(map(PyKCS11.CKA.get, all_attr), attr))
             if attr['CKA_CERTIFICATE_TYPE'] != None:
-                cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']), default_backend())
-                cadeia_cert.append(x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']), default_backend()))
-                if user == "":
-                    user = cert.subject.get_attributes_for_oid(NameOID.GIVEN_NAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SURNAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
+                cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']))
+                cadeia_certs.append(x509.load_der_x509_certificate(bytes(attr['CKA_VALUE'])))
+                if cur_user == None:
+                    cur_user = cert.subject.get_attributes_for_oid(NameOID.GIVEN_NAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SURNAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
                     self.user_cc = cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
         #print("\nCADEIA_CERT")
         #for c in cadeia_cert:
@@ -144,18 +148,18 @@ class Client:
         #print("\nPRIVATE", private_key)
         #print("\nPUBLIC", cert.public_key())
     
-        print("\ncadeia_cert[0]: ", cadeia_cert[0])
-        print("\nSession: ", session)
-        print("\nPrivateKey ", private_key)
-        print("\nUser: ", user)
+        #print("\ncadeia_cert[0]: ", cadeia_cert[0])
+        #print("\nSession: ", session)
+        #print("\nPrivateKey ", private_key)
+        #print("\nUser: ", cur_user)
 
-        self.cadeia_cert0 = cadeia_cert[0]
+        self.cadeia_cert0 = cadeia_certs[0]
         self.session = session
         self.private_key = private_key
-        self.user_cc = user
-        self.cert = cert
+        self.user_cc = cur_user
+        self.cc_cert = cert
 
-        return cadeia_cert[0]
+        return cadeia_certs[0]
 
 
     #_____________________________

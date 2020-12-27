@@ -52,16 +52,45 @@ CLIENT_INFO = {}
 
 server_cert = None
 
+cc_certs = {}
+root_certs = {}
+
 
 def load_cert(path):
-    with open(path, 'rb') as f:
+    with open(path, 'rb') as f:      
         cert_data = f.read()
-        return x509.load_pem_x509_certificate(cert_data)
+        try:
+            return x509.load_pem_x509_certificate(cert_data)
+        except:
+            return x509.load_der_x509_certificate(cert_data)
+
+def get_chain():
+    for root, dirs, files in os.walk("../cc_certs/"):
+        for filename in files:
+            if filename != '.DS_Store':
+                certificate = load_cert("../cc_certs/" + filename)
+                if verify_date(certificate):
+                    cc_certs[certificate.subject](certificate)
+
+    for root, dirs, files in os.walk("../root_certs/"):
+        for filename in files:
+            if filename != '.DS_Store':
+                certificate = load_cert("../root_certs/" + filename)
+                if verify_date(certificate):
+                    root_certs[certificate.subject](certificate)
+
+def get_cc_chain(cert):
+    cert_chain = []
+    cert_to_check = []
+    pass
 
 
-def full_cert_verify(self, cert, issuer_cert):
+    
+    
+
+def full_cert_verify(cert, issuer_cert):
     if cert.issuer == issuer_cert.issuer:
-        if self.verify_date(cert) and self.verify_purpose(cert) and self.verify_signatures(cert, issuer_cert):
+        if verify_date(cert) and verify_purpose(cert) and verify_signatures(cert, issuer_cert):
             print("All good")
             return True
         else:
@@ -71,14 +100,14 @@ def full_cert_verify(self, cert, issuer_cert):
     return False
 
 
-def verify_purpose(self, cert):
+def verify_purpose(cert):
     if ExtendedKeyUsageOID.SERVER_AUTH in cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
         return True
     else:
         return False
 
 
-def verify_signatures(self, cert, issuer_cert):
+def verify_signatures(cert, issuer_cert):
     issuer_public_key = issuer_cert.public_key()
     try:
         issuer_public_key.verify(
@@ -95,7 +124,7 @@ def verify_signatures(self, cert, issuer_cert):
         return False
 
 
-def verify_date(self, cert):
+def verify_date(cert):
 
     if datetime.now() > cert.not_valid_after:
         return False
@@ -475,7 +504,8 @@ class MediaServer(resource.Resource):
 print("Server started")
 print("URL is: http://IP:8080")
 
-server_cert = load_cert('../xca/server-localhost.crt')
+server_cert = load_cert('../server_certs/server-localhost.crt')
+build_chain()
 
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)
