@@ -25,3 +25,13 @@
     ```
     brew install homebrew-ffmpeg/ffmpeg/ffmpeg
     ```
+
+
+
+# How To Run
+
+1. Install _swig_ using _HomeBrew_:
+    ```
+    brew install swig
+    ```
+

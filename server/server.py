@@ -17,7 +17,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography import x509
+from datetime import datetime
+import PyKCS11
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 import random
 
@@ -48,10 +52,55 @@ CLIENT_INFO = {}
 
 server_cert = None
 
+
 def load_cert(path):
-        with open(path, 'rb') as f:
-            cert_data = f.read()
-            return x509.load_pem_x509_certificate(cert_data)
+    with open(path, 'rb') as f:
+        cert_data = f.read()
+        return x509.load_pem_x509_certificate(cert_data)
+
+
+def full_cert_verify(self, cert, issuer_cert):
+    if cert.issuer == issuer_cert.issuer:
+        if self.verify_date(cert) and self.verify_purpose(cert) and self.verify_signatures(cert, issuer_cert):
+            print("All good")
+            return True
+        else:
+            print("Can't verify certificate integraty")
+    else:
+        print("Can't chain to root CA")
+    return False
+
+
+def verify_purpose(self, cert):
+    if ExtendedKeyUsageOID.SERVER_AUTH in cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
+        return True
+    else:
+        return False
+
+
+def verify_signatures(self, cert, issuer_cert):
+    issuer_public_key = issuer_cert.public_key()
+    try:
+        issuer_public_key.verify(
+            cert.signature,
+            cert.tbs_certificate_bytes,
+            PKCS1v15(),
+            cert.signature_hash_algorithm,
+        )
+        
+        return True
+
+
+    except InvalidSignature:
+        return False
+
+
+def verify_date(self, cert):
+
+    if datetime.now() > cert.not_valid_after:
+        return False
+    else:
+        return True
 
 
 class MediaServer(resource.Resource):
@@ -304,7 +353,7 @@ class MediaServer(resource.Resource):
 
         logger.debug(f'Download: chunk: {chunk_id}')
 
-        offset = chunk_id * CHUNK_SIZE 
+        offset = chunk_id * CHUNK_SIZE
 
         # Open file, seek to correct position and return the chunk
         with open(os.path.join(CATALOG_BASE, media_item['file_name']), 'rb') as f:
@@ -337,8 +386,10 @@ class MediaServer(resource.Resource):
                 response['iv'] = iv.decode('latin')
 
             if chunk_id % 5 != 0 or chunk_id == 0:
-                CLIENT_INFO[request.client.host]['message_key'] = self.simple_digest(CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['message_key'])
-                CLIENT_INFO[request.client.host]['digest_key'] = self.simple_digest(CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['digest_key'])
+                CLIENT_INFO[request.client.host]['message_key'] = self.simple_digest(
+                    CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['message_key'])
+                CLIENT_INFO[request.client.host]['digest_key'] = self.simple_digest(
+                    CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['digest_key'])
 
             request.responseHeaders.addRawHeader(
                 b"content-type", b"application/json")
@@ -357,8 +408,8 @@ class MediaServer(resource.Resource):
         request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
         return b''
 
-
     # Handle a GET request
+
     def render_GET(self, request):
         logger.debug(f'Received request for {request.uri}')
         try:

@@ -1,2 +1,2 @@
-Twisted
+Twisted==20.3.0
 cryptography==3.3.1

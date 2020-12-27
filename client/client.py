@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 import sys
+import PyKCS11
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -60,9 +61,7 @@ class Client:
         return False
 
     def verify_purpose(self, cert):
-        values = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-
-        if ExtendedKeyUsageOID.SERVER_AUTH in values:
+        if ExtendedKeyUsageOID.SERVER_AUTH in cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
             return True
         else:
             return False
@@ -87,10 +86,86 @@ class Client:
         else:
             return True
 
+
+    # Verificar cc introduzido
+    def verify_cc(self):
+        try:
+            #TODO Fazer verificação para saber qual o OS
+            lib = '/usr/local/lib/libpteidpkcs11.dylib'
+            pkcs11 = PyKCS11.PyKCS11Lib()
+            pkcs11.load(lib)
+            slots = pkcs11.getSlotList()
+    
+            for slot in slots:
+                print(pkcs11.getTokenInfo(slot))
+    
+            if len(slots) != 0:
+                return slots, pkcs11
+    
+        except:
+            print("ERRO VERIFY_CC")
+
+    def read_cc(self):
+        # Verificar cc 
+        slots, pkcs11 = self.verify_cc()
+        
+        #for slot in slots:
+            #pass
+            #print(pkcs11.getTokenInfo(slot))
+        slot = pkcs11.getSlotList(tokenPresent=True)[0]
+    
+        all_attr = []
+        for elem in PyKCS11.CKA.keys():
+            if isinstance(elem, int):
+                all_attr.append(elem)
+    
+        cadeia_cert = []
+    
+        session = pkcs11.openSession(slot)
+    
+        user = ""
+    
+        for obj in session.findObjects():
+            attr = session.getAttributeValue(obj, all_attr)
+            attr = dict(zip(map(PyKCS11.CKA.get, all_attr), attr))
+            if attr['CKA_CERTIFICATE_TYPE'] != None:
+                cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']), default_backend())
+                cadeia_cert.append(x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']), default_backend()))
+                if user == "":
+                    user = cert.subject.get_attributes_for_oid(NameOID.GIVEN_NAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SURNAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
+                    self.user_cc = cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
+        #print("\nCADEIA_CERT")
+        #for c in cadeia_cert:
+            #print("\n", c, c.not_valid_before, c.not_valid_after)
+            #print("Valido ? ", validate_date(c.not_valid_before, c.not_valid_after))
+        #print("\nUSER", user)
+    
+        private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY), (PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
+        #print("\nPRIVATE", private_key)
+        #print("\nPUBLIC", cert.public_key())
+    
+        print("\ncadeia_cert[0]: ", cadeia_cert[0])
+        print("\nSession: ", session)
+        print("\nPrivateKey ", private_key)
+        print("\nUser: ", user)
+
+        self.cadeia_cert0 = cadeia_cert[0]
+        self.session = session
+        self.private_key = private_key
+        self.user_cc = user
+        self.cert = cert
+
+        return cadeia_cert[0]
+
+
+    #_____________________________
+
     def main(self):
         print("|--------------------------------------|")
         print("|         SECURE MEDIA CLIENT          |")
         print("|--------------------------------------|\n")
+
+        self.verify_cc()
 
         # Getting server certificate
         req = requests.get(f'{SERVER_URL}/api/auth')
