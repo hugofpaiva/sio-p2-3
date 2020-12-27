@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
+from cryptography import x509
 
 import random
 
@@ -407,6 +408,11 @@ class MediaServer(resource.Resource):
 print("Server started")
 print("URL is: http://IP:8080")
 
+with open('../xca/server-localhost.crt', 'rb') as f:
+    cert_data = f.read()
+    cert = x509.load_pem_x509_certificate(cert_data)
+print(cert.subject)
+print(cert.issuer)
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)
 reactor.run()
