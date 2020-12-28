@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
@@ -43,12 +44,11 @@ class Client:
         self.selected_mode = None
         self.root_ca_cert = self.load_cert('../server_certs/SIO_CA_1.crt')
         self.server_cert = None
-        #
-        self.cadeia_cert0 = None
         self.session = None
+        self.user = None
+        self.cert = None
         self.private_key = None
-        self.user_cc = None
-        self.cc_cert = None
+        
 
     def load_cert(self, path):
         with open(path, 'rb') as f:
@@ -101,75 +101,44 @@ class Client:
                 lib = '/usr/local/lib/libpteidpkcs11.dylib'
             pkcs11 = PyKCS11.PyKCS11Lib()
             pkcs11.load(lib)
-            slot_list = pkcs11.getSlotList()
-    
-            #Agora que está tudo numa função esta condição parece-me desnecessária
-            #if len(slots) != 0:
-               # slot_list = slots
 
-
+            # List the first slot with present token
+            slot = pkcs11.getSlotList(tokenPresent=True)[0]
     
         except:
-            print("ERRO VERIFY_CC")
+            print("Cart not present")
             quit()
         
-        #for slot in slots:
-            #pass
-            #print(pkcs11.getTokenInfo(slot))
-        slot = pkcs11.getSlotList(tokenPresent=True)[0]
     
-        all_attr = []
-        for elem in PyKCS11.CKA.keys():
-            if isinstance(elem, int):
-                all_attr.append(elem)
-    
-        cadeia_certs = []
+        all_attr = list(PyKCS11.CKA.keys())
+        #Filter attributes
+        all_attr = [e for e in all_attr if isinstance(e, int)]
     
         session = pkcs11.openSession(slot)
-    
-        cur_user = None
-    
+
         for obj in session.findObjects():
+            # Get object attributes
             attr = session.getAttributeValue(obj, all_attr)
+            # Create dictionary with attributes
             attr = dict(zip(map(PyKCS11.CKA.get, all_attr), attr))
-            if attr['CKA_CERTIFICATE_TYPE'] != None:
-                cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']))
-                cadeia_certs.append(x509.load_der_x509_certificate(bytes(attr['CKA_VALUE'])))
-                if cur_user == None:
-                    cur_user = cert.subject.get_attributes_for_oid(NameOID.GIVEN_NAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SURNAME)[0].value + " " + cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
-                    self.user_cc = cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
-        #print("\nCADEIA_CERT")
-        #for c in cadeia_cert:
-            #print("\n", c, c.not_valid_before, c.not_valid_after)
-            #print("Valido ? ", validate_date(c.not_valid_before, c.not_valid_after))
-        #print("\nUSER", user)
-    
-        private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY), (PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
-        #print("\nPRIVATE", private_key)
-        #print("\nPUBLIC", cert.public_key())
-    
-        #print("\ncadeia_cert[0]: ", cadeia_cert[0])
-        #print("\nSession: ", session)
-        #print("\nPrivateKey ", private_key)
-        #print("\nUser: ", cur_user)
-
-        self.cadeia_cert0 = cadeia_certs[0]
-        self.session = session
-        self.private_key = private_key
-        self.user_cc = cur_user
-        self.cc_cert = cert
-
-        return cadeia_certs[0]
 
 
-    #_____________________________
+            if attr['CKA_LABEL'] == 'CITIZEN AUTHENTICATION CERTIFICATE':
+                if attr['CKA_CERTIFICATE_TYPE'] != None:
+                    self.cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']))
+                    self.user = self.cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
+
+        self.private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY), (PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
+
+        return 
+
 
     def main(self):
         print("|--------------------------------------|")
         print("|         SECURE MEDIA CLIENT          |")
         print("|--------------------------------------|\n")
 
-        self.verify_cc()
+        self.get_cc()
 
         # Getting server certificate
         req = requests.get(f'{SERVER_URL}/api/auth')
@@ -183,6 +152,16 @@ class Client:
                 quit()
 
         else:
+            quit()
+
+        response = {'certificate': binascii.b2a_base64(
+            self.cert.public_bytes(Encoding.PEM)).decode('latin').strip()}
+
+        req = requests.post(f'{SERVER_URL}/api/auth', data=json.dumps(
+            response).encode('latin'), headers={"content-type": "application/json"})
+
+        if req.status_code != 200:
+            print("Authentication of user error")
             quit()
 
         # Choosing options
