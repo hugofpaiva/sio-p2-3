@@ -7,6 +7,7 @@ import subprocess
 import time
 import sys
 import PyKCS11
+from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -16,6 +17,7 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+from cryptography.hazmat import primitives
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from datetime import datetime
@@ -48,7 +50,6 @@ class Client:
         self.user = None
         self.cert = None
         self.private_key = None
-        
 
     def load_cert(self, path):
         with open(path, 'rb') as f:
@@ -58,8 +59,8 @@ class Client:
     def full_cert_verify(self, cert, issuer_cert):
         if cert.issuer == issuer_cert.issuer:
             if self.verify_date(cert) and self.verify_purpose(cert) and self.verify_signatures(cert, issuer_cert):
-               print("All good")
-               return True
+                print("All good")
+                return True
             else:
                 print("Can't verify certificate integraty")
         else:
@@ -93,7 +94,7 @@ class Client:
             return True
 
     def get_cc(self):
-        # Verificar cc 
+        # Verificar cc
         try:
             lib = '/usr/local/lib/libpteidpkcs11.so'
 
@@ -104,34 +105,34 @@ class Client:
 
             # List the first slot with present token
             slot = pkcs11.getSlotList(tokenPresent=True)[0]
-    
+
         except:
             print("Cart not present")
             quit()
-        
-    
-        all_attr = list(PyKCS11.CKA.keys())
-        #Filter attributes
-        all_attr = [e for e in all_attr if isinstance(e, int)]
-    
-        session = pkcs11.openSession(slot)
 
-        for obj in session.findObjects():
+        all_attr = list(PyKCS11.CKA.keys())
+        # Filter attributes
+        all_attr = [e for e in all_attr if isinstance(e, int)]
+
+        self.session = pkcs11.openSession(slot)
+
+        for obj in self.session.findObjects():
             # Get object attributes
-            attr = session.getAttributeValue(obj, all_attr)
+            attr = self.session.getAttributeValue(obj, all_attr)
             # Create dictionary with attributes
             attr = dict(zip(map(PyKCS11.CKA.get, all_attr), attr))
 
-
             if attr['CKA_LABEL'] == 'CITIZEN AUTHENTICATION CERTIFICATE':
                 if attr['CKA_CERTIFICATE_TYPE'] != None:
-                    self.cert = x509.load_der_x509_certificate(bytes(attr['CKA_VALUE']))
-                    self.user = self.cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
+                    self.cert = x509.load_der_x509_certificate(
+                        bytes(attr['CKA_VALUE']))
+                    self.user = self.cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[
+                        0].value
 
-        self.private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY), (PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
+        self.private_key = self.session.findObjects(
+            [(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY), (PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
 
-        return 
-
+        return
 
     def main(self):
         print("|--------------------------------------|")
@@ -151,14 +152,65 @@ class Client:
             if not self.full_cert_verify(self.server_cert, self.root_ca_cert):
                 quit()
 
+            nounce = os.urandom(32)
+
+            response = {'nounce': binascii.b2a_base64(
+                nounce).decode('latin').strip()}
+
+            req = requests.post(f'{SERVER_URL}/api/auth', data=json.dumps(
+                response).encode('latin'), headers={"content-type": "application/json"})
+
+            if req.status_code == 200:
+                response = req.json()
+                signed_nounce = binascii.a2b_base64(
+                    response['signed_nounce'].encode('latin'))
+
+                try:
+                    self.server_cert.public_key().verify(
+                        signed_nounce,
+                        nounce,
+                        asymmetric.padding.PSS(
+                            mgf=asymmetric.padding.MGF1(
+                                primitives.hashes.SHA256()),
+                            salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                        ),
+                        primitives.hashes.SHA256()
+                    )
+                    print("Servidor Autenticado")
+                except InvalidSignature:
+                    quit()
+
+            else:
+                quit()
+
+        else:
+            quit()
+
+        req = requests.get(f'{SERVER_URL}/api/cc_auth')
+        if req.status_code == 200:
+            response = req.json()
+            nounce = binascii.a2b_base64(
+                response['nounce'].encode('latin'))
+
+            mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
+
+            signed_nounce = bytes(self.session.sign(
+                self.private_key, nounce, mechanism))
         else:
             quit()
 
         response = {'certificate': binascii.b2a_base64(
-            self.cert.public_bytes(Encoding.PEM)).decode('latin').strip()}
+            self.cert.public_bytes(Encoding.PEM)).decode('latin').strip(), 'signed_nounce': binascii.b2a_base64(signed_nounce).decode('latin').strip()}
 
-        req = requests.post(f'{SERVER_URL}/api/auth', data=json.dumps(
+        req = requests.post(f'{SERVER_URL}/api/cc_auth', data=json.dumps(
             response).encode('latin'), headers={"content-type": "application/json"})
+        
+        if req.status_code == 200:
+            print("Utilizador Autenticado")
+        else:
+            quit()
+
+        
 
         if req.status_code != 200:
             print("Authentication of user error")

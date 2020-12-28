@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import math
+from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, hmac
@@ -57,12 +58,13 @@ root_certs = {}
 
 
 def load_cert(path):
-    with open(path, 'rb') as f:      
+    with open(path, 'rb') as f:
         cert_data = f.read()
         try:
             return x509.load_pem_x509_certificate(cert_data)
         except:
             return x509.load_der_x509_certificate(cert_data)
+
 
 def get_chain():
     for root, dirs, files in os.walk("../cc_certs/"):
@@ -70,17 +72,18 @@ def get_chain():
             if filename != '.DS_Store':
                 certificate = load_cert("../cc_certs/" + filename)
                 if verify_date(certificate):
-                    cc_certs[certificate.subject]=certificate
+                    cc_certs[certificate.subject] = certificate
 
     for root, dirs, files in os.walk("../root_certs/"):
         for filename in files:
             if filename != '.DS_Store':
                 certificate = load_cert("../root_certs/" + filename)
                 if verify_date(certificate):
-                    root_certs[certificate.subject]=certificate
+                    root_certs[certificate.subject] = certificate
+
 
 def get_cc_chain(cert, chain={}):
-    chain[cert.subject] = cert 
+    chain[cert.subject] = cert
 
     if cert.issuer == cert.subject and cert.issuer in root_certs:
         return chain
@@ -91,7 +94,7 @@ def get_cc_chain(cert, chain={}):
 
     # Trust Chain isn't complete
     return False
-    
+
 
 def full_chain_cert_verify(chain, cert, first=False):
     issuer_cert = chain[cert.issuer]
@@ -105,6 +108,7 @@ def full_chain_cert_verify(chain, cert, first=False):
         print("Can't verify certificate integraty")
         print("Chain Broken")
         return False
+
 
 def verify_purpose(cert, is_cc=False):
     if is_cc:
@@ -120,7 +124,7 @@ def verify_purpose(cert, is_cc=False):
                 return False
         else:
             return False
-    
+
 
 def verify_signatures(cert, issuer_cert):
     issuer_public_key = issuer_cert.public_key()
@@ -131,9 +135,8 @@ def verify_signatures(cert, issuer_cert):
             PKCS1v15(),
             cert.signature_hash_algorithm,
         )
-        
-        return True
 
+        return True
 
     except InvalidSignature:
         return False
@@ -146,6 +149,20 @@ def verify_date(cert):
         return True
 
 
+def sign(nounce):
+    with open("../server_certs/server-localhost_pk.pem", "rb") as f:
+        private_key = serialization.load_pem_private_key(f.read(), None)
+
+    signature = private_key.sign(
+        nounce,
+        asymmetric.padding.PSS(
+            mgf=asymmetric.padding.MGF1(hashes.SHA256()),
+            salt_length=asymmetric.padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+
+    return signature
 
 
 class MediaServer(resource.Resource):
@@ -234,19 +251,62 @@ class MediaServer(resource.Resource):
     def post_auth(self, request):
         response = json.loads(request.content.read())
 
+        nounce = binascii.a2b_base64(
+            response['nounce'].encode('latin'))
+
+        nounce = sign(nounce)
+
+        response = {'signed_nounce': binascii.b2a_base64(
+            nounce).decode('latin').strip()}
+
+        request.setResponseCode(200)
+        request.responseHeaders.addRawHeader(
+            b"content-type", b"application/json")
+        return json.dumps(response).encode('latin')
+
+    def get_cc_auth(self, request):
+        nounce = os.urandom(32)
+
+        CLIENT_INFO[request.client.host] = {}
+        CLIENT_INFO[request.client.host]['cc_nounce'] = nounce
+
+        response = {'nounce': binascii.b2a_base64(
+            nounce).decode('latin').strip()}
+
+        request.setResponseCode(200)
+        request.responseHeaders.addRawHeader(
+            b"content-type", b"application/json")
+        return json.dumps(response).encode('latin')
+
+    def post_cc_auth(self, request):
+        response = json.loads(request.content.read())
+
         certificate = binascii.a2b_base64(
-                response['certificate'].encode('latin'))
+            response['certificate'].encode('latin'))
+
+        signed_nounce = binascii.a2b_base64(
+            response['signed_nounce'].encode('latin'))
+
         client_cert = x509.load_pem_x509_certificate(certificate)
 
         chain = get_cc_chain(client_cert)
+
+        nounce = CLIENT_INFO[request.client.host]['cc_nounce']
 
         responseCode = 401
 
         if chain:
             if full_chain_cert_verify(chain, client_cert, True):
-                responseCode=200
-                
-        
+                try:
+                    client_cert.public_key().verify(
+                        signed_nounce,
+                        nounce,
+                        asymmetric.padding.PKCS1v15(),
+                        hashes.SHA1()
+                    )
+                    responseCode = 200
+                except InvalidSignature:
+                    pass
 
         request.setResponseCode(responseCode)
         request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
@@ -312,7 +372,6 @@ class MediaServer(resource.Resource):
         selected_hash = random.choice(response['hashes'])
         selected_mode = random.choice(response['modes'])
 
-        CLIENT_INFO[request.client.host] = {}
         CLIENT_INFO[request.client.host]['options'] = {}
         CLIENT_INFO[request.client.host]['options']['selected_algorithm'] = selected_algorithm
         CLIENT_INFO[request.client.host]['options']['selected_hash'] = selected_hash
@@ -494,6 +553,9 @@ class MediaServer(resource.Resource):
             elif request.path == b'/api/auth':
                 return self.get_auth(request)
 
+            elif request.path == b'/api/cc_auth':
+                return self.get_cc_auth(request)
+
             elif request.path == b'/api/list':
                 return self.do_list(request)
 
@@ -527,6 +589,9 @@ class MediaServer(resource.Resource):
 
             elif request.path == b'/api/auth':
                 return self.post_auth(request)
+
+            elif request.path == b'/api/cc_auth':
+                return self.post_cc_auth(request)
 
             else:
                 request.responseHeaders.addRawHeader(
