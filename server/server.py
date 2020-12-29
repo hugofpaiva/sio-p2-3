@@ -349,10 +349,9 @@ class MediaServer(resource.Resource):
                 ec.ECDH(), loaded_public_key)
 
         MESSAGE_KEY = HKDF(
-            algorithm=hashes_options[CLIENT_INFO[request.client.host]
-                                     ['options']['selected_hash']](),
+            algorithm=hashes.SHA256(),
             length=32,
-            salt=None,
+            salt=os.urandom(16),
             info=b'handshake data',).derive(shared_key)
 
         if request.path == b'/api/digest_key':

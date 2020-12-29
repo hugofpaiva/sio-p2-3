@@ -454,9 +454,9 @@ class Client:
             shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
             self.DIGEST_KEY = HKDF(
-                algorithm=hashes_options[self.selected_hash](),
+                algorithm=hashes.SHA256(),
                 length=32,  # 256 bits consoante o algoritmo
-                salt=None,  # osrandom
+                salt=os.urandom(16),  # osrandom
                 info=b'handshake data',).derive(shared_key)
 
         public_key = private_key.public_key()
@@ -490,9 +490,9 @@ class Client:
             shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
             self.MESSAGE_KEY = HKDF(
-                algorithm=hashes_options[self.selected_hash](),
-                length=32,  # 256 bits consoante o algoritmo
-                salt=None,  # osrandom
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=os.urandom(16),
                 info=b'handshake data',).derive(shared_key)
 
         public_key = private_key.public_key()
