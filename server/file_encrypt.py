@@ -53,6 +53,11 @@ for root, dirs, files in os.walk("./catalog/"):
                 )
             )
 
-            f_info.write(bytes(filename, encoding='utf8')+b"-"+encrypted_key+b"-"+iv)
+            filename=bytes(filename, encoding='utf8')
+            diff=128-len(filename)
+            filename+=bytes([diff]*diff)
+
+
+            f_info.write(filename+encrypted_key+iv)
 f_info.close
 

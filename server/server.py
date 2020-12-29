@@ -192,7 +192,7 @@ def decrypt_catalog(os_walk_path):
 
     private_key = None
     file_name = None
-    dec_key = None 
+    decrypted_key = None 
     iv = None
 
     #Get server private key 
@@ -205,16 +205,15 @@ def decrypt_catalog(os_walk_path):
     #For each line
     for line in info_file.readlines():
         #Get info
-        info = line.split(b'-')
-        file_name = info[0]
-        encrypted_key = info[1]
-        iv = info[2]
+        file_name = line[0:128-line[127]].decode('utf-8')
+        encrypted_key = line[128:384]
+        iv = line[384:416]
 
         #Decrypt key
         decrypted_key = private_key.decrypt(
             encrypted_key,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            asymmetric.padding.OAEP(
+                mgf=asymmetric.padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
                 label=None
             )
@@ -223,20 +222,29 @@ def decrypt_catalog(os_walk_path):
         #Go through encrypted song directory
         for root, dirs, files in os.walk(os_walk_path):
             for filename in files:
-                if filename == file_name:
-
+                if filename.split('.')[0] == file_name.split('.')[0]:
+                    
+                    block_size = algorithms.AES.block_size // 8
                     #Open song file for current key 
-                    with open(file_name, mode='rb') as encrypted_song_file:
-                        encrypted_song = encrypted_song_file.read()
+                    with open(os_walk_path + filename, mode='rb') as encrypted_song_file:
+                        counter=0
+                        content = encrypted_song_file.read(block_size)
 
-                        #Data decryption process
                         cipher = Cipher(algorithms.AES(decrypted_key), modes.OFB(iv))
                         decryptor = cipher.decryptor()
-                        decrypted_song = decryptor.update(encrypted_song)
 
-                        #Adding decrypted song to SONGS dictionary
-                        print("Adding song file " + file_name + "to songs.")
-                        SONGS[file_name] = decrypted_song
+                        SONGS[file_name] = bytearray()
+                        
+                        while True:
+                            if len(content) < block_size:
+                                SONGS[file_name] += bytearray(decryptor.update(content) + decryptor.finalize())
+                                break
+                            else:
+                                SONGS[file_name] += bytearray(decryptor.update(content))
+
+                            counter+=1
+                            encrypted_song_file.seek(counter*block_size)
+                            content = encrypted_song_file.read(block_size)
 
     return True
                     
@@ -558,51 +566,52 @@ class MediaServer(resource.Resource):
         offset = chunk_id * CHUNK_SIZE
 
         # Open file, seek to correct position and return the chunk
-        with open(os.path.join(CATALOG_BASE, media_item['file_name']), 'rb') as f:
-            f.seek(offset)
-            data = f.read(CHUNK_SIZE)
+        
+        data = SONGS[media_item['file_name']][offset:offset+CHUNK_SIZE]
 
-            data = binascii.b2a_base64(data)
+        data = binascii.b2a_base64(data)
 
-            encryptor_cypher = CLIENT_INFO[request.client.host]['encryptor']
+        encryptor_cypher = CLIENT_INFO[request.client.host]['encryptor']
 
-            data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
-                                                        ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
+        data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
+                                                    ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
 
-            digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
-                                      CLIENT_INFO[request.client.host]['options']['selected_hash'], data)
+        digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
+                                    CLIENT_INFO[request.client.host]['options']['selected_hash'], data)
 
-            if chunk_id != totalchunks:
-                CLIENT_INFO[request.client.host]['encryptor'] = encryptor_cypher
-            else:
-                CLIENT_INFO[request.client.host]['encryptor'] = None
+        if chunk_id != totalchunks:
+            CLIENT_INFO[request.client.host]['encryptor'] = encryptor_cypher
+        else:
+            CLIENT_INFO[request.client.host]['encryptor'] = None
 
-            response = {
-                'media_id': media_id,
-                'chunk': chunk_id,
-                'data': data.decode('latin'),
-                'digest': digest_data.decode('latin'),
-            }
+        response = {
+            'media_id': media_id,
+            'chunk': chunk_id,
+            'data': data.decode('latin'),
+            'digest': digest_data.decode('latin'),
+        }
 
-            if chunk_id == 0:
-                response['iv'] = iv.decode('latin')
+        if chunk_id == 0:
+            response['iv'] = iv.decode('latin')
 
-            if chunk_id % 5 != 0 or chunk_id == 0:
-                CLIENT_INFO[request.client.host]['message_key'] = self.simple_digest(
-                    CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['message_key'])
-                CLIENT_INFO[request.client.host]['digest_key'] = self.simple_digest(
-                    CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['digest_key'])
+        if chunk_id % 5 != 0 or chunk_id == 0:
+            CLIENT_INFO[request.client.host]['message_key'] = self.simple_digest(
+                CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['message_key'])
+            CLIENT_INFO[request.client.host]['digest_key'] = self.simple_digest(
+                CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['digest_key'])
 
-            request.responseHeaders.addRawHeader(
-                b"content-type", b"application/json")
-            return json.dumps(
-                response, indent=4
-            ).encode('latin')
-
-        # File was not open?
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
-        return json.dumps({'error': 'unknown'}, indent=4).encode('latin')
+        return json.dumps(
+            response, indent=4
+        ).encode('latin')
+
+    '''
+    # File was not open?
+    request.responseHeaders.addRawHeader(
+        b"content-type", b"application/json")
+    return json.dumps({'error': 'unknown'}, indent=4).encode('latin')
+    '''
 
     def logout(self, request):
         del CLIENT_INFO[request.client.host]
