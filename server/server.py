@@ -42,6 +42,8 @@ CATALOG = {'898a08080d1840793122b7e118b27a95d117ebce':
            }
            }
 
+SONGS = {}
+
 CATALOG_BASE = 'catalog'
 CHUNK_SIZE = 1024 * 4
 
@@ -185,6 +187,60 @@ def sign(nounce):
     )
 
     return signature
+
+def decrypt_catalog(os_walk_path):
+
+    private_key = None
+    file_name = None
+    dec_key = None 
+    iv = None
+
+    #Get server private key 
+    with open("../server_certs/server-localhost_pk.pem", "rb") as server_cert_file:
+        private_key = serialization.load_pem_private_key(server_cert_file.read(), None)
+
+    #Open info file
+    info_file = open('file_info.txt', 'rb')
+
+    #For each line
+    for line in info_file.readlines():
+        #Get info
+        info = line.split(b'-')
+        file_name = info[0]
+        encrypted_key = info[1]
+        iv = info[2]
+
+        #Decrypt key
+        decrypted_key = private_key.decrypt(
+            encrypted_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        #Go through encrypted song directory
+        for root, dirs, files in os.walk(os_walk_path):
+            for filename in files:
+                if filename == file_name:
+
+                    #Open song file for current key 
+                    with open(file_name, mode='rb') as encrypted_song_file:
+                        encrypted_song = encrypted_song_file.read()
+
+                        #Data decryption process
+                        cipher = Cipher(algorithms.AES(decrypted_key), modes.OFB(iv))
+                        decryptor = cipher.decryptor()
+                        decrypted_song = decryptor.update(encrypted_song)
+
+                        #Adding decrypted song to SONGS dictionary
+                        print("Adding song file " + file_name + "to songs.")
+                        SONGS[file_name] = decrypted_song
+
+    return True
+                    
+
 
 
 class MediaServer(resource.Resource):
@@ -633,6 +689,7 @@ print("URL is: http://IP:8080")
 server_cert = load_cert('../server_certs/server-localhost.crt')
 get_chain()
 get_crl()
+decrypt_catalog("./encrypted_catalog/")
 
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)
