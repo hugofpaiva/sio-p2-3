@@ -56,6 +56,8 @@ server_cert = None
 cc_certs = {}
 root_certs = {}
 
+crl= []
+
 
 def load_cert(path):
     with open(path, 'rb') as f:
@@ -64,6 +66,14 @@ def load_cert(path):
             return x509.load_pem_x509_certificate(cert_data)
         except:
             return x509.load_der_x509_certificate(cert_data)
+
+def load_crl(path):
+    with open(path, 'rb') as f:
+        crl_data = f.read()
+        try:
+            return x509.load_der_x509_crl(crl_data)
+        except:
+            return x509.load_pem_x509_crl(crl_data)
 
 
 def get_chain():
@@ -80,6 +90,12 @@ def get_chain():
                 certificate = load_cert("../root_certs/" + filename)
                 if verify_date(certificate):
                     root_certs[certificate.subject] = certificate
+
+def get_crl():
+    for root, dirs, files in os.walk("../cc_crl/"):
+        for filename in files:
+            if filename != '.DS_Store':
+                crl.append(load_crl("../cc_crl/" + filename))              
 
 
 def get_cc_chain(cert, chain={}):
@@ -98,7 +114,7 @@ def get_cc_chain(cert, chain={}):
 
 def full_chain_cert_verify(chain, cert, first=False):
     issuer_cert = chain[cert.issuer]
-    if verify_date(cert) and verify_purpose(cert, first) and verify_signatures(cert, issuer_cert):
+    if verify_date(cert) and verify_purpose(cert, first) and verify_crl(cert) and verify_signatures(cert, issuer_cert):
         if cert.issuer == issuer_cert.issuer:
             print("Reached valid root CA")
             return True
@@ -108,6 +124,12 @@ def full_chain_cert_verify(chain, cert, first=False):
         print("Can't verify certificate integraty")
         print("Chain Broken")
         return False
+
+def verify_crl(cert):
+    for list in crl:
+        if list.get_revoked_certificate_by_serial_number(cert.serial_number):
+            return False
+    return True
 
 
 def verify_purpose(cert, is_cc=False):
@@ -351,7 +373,7 @@ class MediaServer(resource.Resource):
         MESSAGE_KEY = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=os.urandom(16),
+            salt=None,
             info=b'handshake data',).derive(shared_key)
 
         if request.path == b'/api/digest_key':
@@ -610,6 +632,7 @@ print("URL is: http://IP:8080")
 
 server_cert = load_cert('../server_certs/server-localhost.crt')
 get_chain()
+get_crl()
 
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)

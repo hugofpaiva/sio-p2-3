@@ -455,8 +455,8 @@ class Client:
 
             self.DIGEST_KEY = HKDF(
                 algorithm=hashes.SHA256(),
-                length=32,  # 256 bits consoante o algoritmo
-                salt=os.urandom(16),  # osrandom
+                length=32,
+                salt=None,
                 info=b'handshake data',).derive(shared_key)
 
         public_key = private_key.public_key()
@@ -492,7 +492,7 @@ class Client:
             self.MESSAGE_KEY = HKDF(
                 algorithm=hashes.SHA256(),
                 length=32,
-                salt=os.urandom(16),
+                salt=None,
                 info=b'handshake data',).derive(shared_key)
 
         public_key = private_key.public_key()
