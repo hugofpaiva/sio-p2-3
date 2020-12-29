@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import math
+import base64
 from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -188,6 +189,20 @@ def sign(nounce):
 
     return signature
 
+def decrypt_uiid(id):
+    #Get server private key 
+    with open("../server_certs/server-localhost_pk.pem", "rb") as server_cert_file:
+        private_key = serialization.load_pem_private_key(server_cert_file.read(), None)
+
+        return private_key.decrypt(
+            id,
+            asymmetric.padding.OAEP(
+                mgf=asymmetric.padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
 def decrypt_catalog(os_walk_path):
 
     private_key = None
@@ -329,7 +344,7 @@ class MediaServer(resource.Resource):
 
     def get_auth(self, request):
         response = {'certificate': binascii.b2a_base64(
-            server_cert.public_bytes(Encoding.PEM)).decode('latin').strip()}
+            server_cert.public_bytes(Encoding.PEM)).decode('latin')}
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
         return json.dumps(response).encode('latin')
@@ -343,7 +358,7 @@ class MediaServer(resource.Resource):
         nounce = sign(nounce)
 
         response = {'signed_nounce': binascii.b2a_base64(
-            nounce).decode('latin').strip()}
+            nounce).decode('latin')}
 
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(
@@ -351,10 +366,11 @@ class MediaServer(resource.Resource):
         return json.dumps(response).encode('latin')
 
     def get_cc_auth(self, request):
+        id = request.getHeader('Authorization')
         nounce = os.urandom(32)
 
-        CLIENT_INFO[request.client.host] = {}
-        CLIENT_INFO[request.client.host]['cc_nounce'] = nounce
+        CLIENT_INFO[id] = {}
+        CLIENT_INFO[id]['cc_nounce'] = nounce
 
         response = {'nounce': binascii.b2a_base64(
             nounce).decode('latin').strip()}
@@ -367,6 +383,8 @@ class MediaServer(resource.Resource):
     def post_cc_auth(self, request):
         response = json.loads(request.content.read())
 
+        id = request.getHeader('Authorization')
+        
         certificate = binascii.a2b_base64(
             response['certificate'].encode('latin'))
 
@@ -377,7 +395,7 @@ class MediaServer(resource.Resource):
 
         chain = get_cc_chain(client_cert)
 
-        nounce = CLIENT_INFO[request.client.host]['cc_nounce']
+        nounce = CLIENT_INFO[id]['cc_nounce']
 
         responseCode = 401
 
@@ -401,10 +419,12 @@ class MediaServer(resource.Resource):
     def get_key(self, request):
         private_key = ec.generate_private_key(ec.SECP384R1())
 
+        id = request.getHeader('Authorization')
+
         if request.path == b'/api/digest_key':
-            CLIENT_INFO[request.client.host]['dh_digest_private_key'] = private_key
+            CLIENT_INFO[id]['dh_digest_private_key'] = private_key
         elif request.path == b'/api/key':
-            CLIENT_INFO[request.client.host]['dh_private_key'] = private_key
+            CLIENT_INFO[id]['dh_private_key'] = private_key
 
         public_key = private_key.public_key()
 
@@ -413,7 +433,7 @@ class MediaServer(resource.Resource):
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
         response = {'key': binascii.b2a_base64(
-            serialized_public).decode('latin').strip()}
+            serialized_public).decode('latin')}
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
         return json.dumps(response).encode('latin')
@@ -427,11 +447,15 @@ class MediaServer(resource.Resource):
         loaded_public_key = serialization.load_pem_public_key(
             client_public_key,)
 
+        id = request.getHeader('Authorization')
+
+        shared_key = None
+
         if request.path == b'/api/digest_key':
-            shared_key = CLIENT_INFO[request.client.host]['dh_digest_private_key'].exchange(
+            shared_key = CLIENT_INFO[id]['dh_digest_private_key'].exchange(
                 ec.ECDH(), loaded_public_key)
         elif request.path == b'/api/key':
-            shared_key = CLIENT_INFO[request.client.host]['dh_private_key'].exchange(
+            shared_key = CLIENT_INFO[id]['dh_private_key'].exchange(
                 ec.ECDH(), loaded_public_key)
 
         MESSAGE_KEY = HKDF(
@@ -441,10 +465,10 @@ class MediaServer(resource.Resource):
             info=b'handshake data',).derive(shared_key)
 
         if request.path == b'/api/digest_key':
-            CLIENT_INFO[request.client.host]['digest_key'] = MESSAGE_KEY
+            CLIENT_INFO[id]['digest_key'] = MESSAGE_KEY
 
         elif request.path == b'/api/key':
-            CLIENT_INFO[request.client.host]['message_key'] = MESSAGE_KEY
+            CLIENT_INFO[id]['message_key'] = MESSAGE_KEY
 
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
@@ -457,10 +481,12 @@ class MediaServer(resource.Resource):
         selected_hash = random.choice(response['hashes'])
         selected_mode = random.choice(response['modes'])
 
-        CLIENT_INFO[request.client.host]['options'] = {}
-        CLIENT_INFO[request.client.host]['options']['selected_algorithm'] = selected_algorithm
-        CLIENT_INFO[request.client.host]['options']['selected_hash'] = selected_hash
-        CLIENT_INFO[request.client.host]['options']['selected_mode'] = selected_mode
+        id = request.getHeader('Authorization')
+
+        CLIENT_INFO[id]['options'] = {}
+        CLIENT_INFO[id]['options']['selected_algorithm'] = selected_algorithm
+        CLIENT_INFO[id]['options']['selected_hash'] = selected_hash
+        CLIENT_INFO[id]['options']['selected_mode'] = selected_mode
 
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(
@@ -474,17 +500,20 @@ class MediaServer(resource.Resource):
         ).encode('latin')
 
     def do_get_protocols(self, request):
+        id = request.getHeader('Authorization')
+
         options = json.dumps(
-            CLIENT_INFO[request.client.host]['options']).encode('latin')
+            CLIENT_INFO[id]['options']).encode('latin')
+        
 
-        options, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
-                                                       ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], options)
+        options, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], options)
 
-        options_digest = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
-                                     CLIENT_INFO[request.client.host]['options']['selected_hash'], options)
+        options_digest = self.digest(CLIENT_INFO[id]['digest_key'],
+                                     CLIENT_INFO[id]['options']['selected_hash'], options)
 
         # To use later
-        CLIENT_INFO[request.client.host]['encryptor'] = None
+        CLIENT_INFO[id]['encryptor'] = None
 
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
@@ -571,18 +600,20 @@ class MediaServer(resource.Resource):
 
         data = binascii.b2a_base64(data)
 
-        encryptor_cypher = CLIENT_INFO[request.client.host]['encryptor']
+        id = request.getHeader('Authorization')
 
-        data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[request.client.host]['options']['selected_algorithm'], CLIENT_INFO[request.client.host]
-                                                    ['options']['selected_mode'], CLIENT_INFO[request.client.host]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
+        encryptor_cypher = CLIENT_INFO[id]['encryptor']
 
-        digest_data = self.digest(CLIENT_INFO[request.client.host]['digest_key'],
-                                    CLIENT_INFO[request.client.host]['options']['selected_hash'], data)
+        data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                    ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
+
+        digest_data = self.digest(CLIENT_INFO[id]['digest_key'],
+                                    CLIENT_INFO[id]['options']['selected_hash'], data)
 
         if chunk_id != totalchunks:
-            CLIENT_INFO[request.client.host]['encryptor'] = encryptor_cypher
+            CLIENT_INFO[id]['encryptor'] = encryptor_cypher
         else:
-            CLIENT_INFO[request.client.host]['encryptor'] = None
+            CLIENT_INFO[id]['encryptor'] = None
 
         response = {
             'media_id': media_id,
@@ -595,10 +626,10 @@ class MediaServer(resource.Resource):
             response['iv'] = iv.decode('latin')
 
         if chunk_id % 5 != 0 or chunk_id == 0:
-            CLIENT_INFO[request.client.host]['message_key'] = self.simple_digest(
-                CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['message_key'])
-            CLIENT_INFO[request.client.host]['digest_key'] = self.simple_digest(
-                CLIENT_INFO[request.client.host]['options']['selected_hash'], CLIENT_INFO[request.client.host]['digest_key'])
+            CLIENT_INFO[id]['message_key'] = self.simple_digest(
+                CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['message_key'])
+            CLIENT_INFO[id]['digest_key'] = self.simple_digest(
+                CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['digest_key'])
 
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
@@ -614,7 +645,8 @@ class MediaServer(resource.Resource):
     '''
 
     def logout(self, request):
-        del CLIENT_INFO[request.client.host]
+        id = request.getHeader('Authorization')
+        del CLIENT_INFO[id]
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
         return b''

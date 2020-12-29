@@ -6,6 +6,8 @@ import os
 import subprocess
 import time
 import sys
+import uuid
+import base64
 import PyKCS11
 from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -50,6 +52,7 @@ class Client:
         self.user = None
         self.cert = None
         self.private_key = None
+        self.id = uuid.uuid4().hex
 
     def load_cert(self, path):
         with open(path, 'rb') as f:
@@ -92,6 +95,16 @@ class Client:
             return False
         else:
             return True
+
+    def encrypt_uuid(self, id):
+        return self.server_cert.public_key().encrypt(
+            id,
+            asymmetric.padding.OAEP(
+                mgf=asymmetric.padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
 
     def get_cc(self):
         # Verificar cc
@@ -185,8 +198,9 @@ class Client:
 
         else:
             quit()
-
-        req = requests.get(f'{SERVER_URL}/api/cc_auth')
+    
+        # User Authentication
+        req = requests.get(f'{SERVER_URL}/api/cc_auth', headers={"Authorization": self.id})
         if req.status_code == 200:
             response = req.json()
             nounce = binascii.a2b_base64(
@@ -203,18 +217,14 @@ class Client:
             self.cert.public_bytes(Encoding.PEM)).decode('latin').strip(), 'signed_nounce': binascii.b2a_base64(signed_nounce).decode('latin').strip()}
 
         req = requests.post(f'{SERVER_URL}/api/cc_auth', data=json.dumps(
-            response).encode('latin'), headers={"content-type": "application/json"})
-        
+            response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
+
         if req.status_code == 200:
             print("Utilizador Autenticado")
         else:
-            quit()
-
-        
-
-        if req.status_code != 200:
             print("Authentication of user error")
             quit()
+
 
         # Choosing options
         # Algorithm Option
@@ -264,7 +274,7 @@ class Client:
         print("\nContacting Server")
 
         req = requests.post(f'{SERVER_URL}/api/protocols', data=json.dumps(
-            available_options).encode('latin'), headers={"content-type": "application/json"})
+            available_options).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
 
         if req.status_code != 200:
             print("Trading options error")
@@ -281,7 +291,7 @@ class Client:
         # DH Digest Key Exchange
         self.dh_digest_key()
 
-        req = requests.get(f'{SERVER_URL}/api/protocols')
+        req = requests.get(f'{SERVER_URL}/api/protocols', headers={"Authorization": self.id})
         if req.status_code != 200:
             quit()
         else:
@@ -289,7 +299,6 @@ class Client:
             digest = response['digest'].encode('latin')
             options = response['options'].encode('latin')
             iv = response['iv'].encode('latin')
-            print(options)
 
             if self.verify_digest(self.DIGEST_KEY, self.selected_hash, options, digest):
                 options, decryptor_var = self.decryptor(
@@ -348,7 +357,7 @@ class Client:
         # Get data from server and send it to the ffplay stdin through a pipe
         for chunk_id in range(media_item['chunks']):
             req = requests.get(
-                f'{SERVER_URL}/api/download?id={media_item["id"]}&chunk={chunk_id}')
+                f'{SERVER_URL}/api/download?id={media_item["id"]}&chunk={chunk_id}', headers={"Authorization": self.id})
             chunk = req.json()
 
             if chunk_id == 0:
@@ -386,35 +395,24 @@ class Client:
                 self.DIGEST_KEY = self.simple_digest(
                     self.selected_hash, self.DIGEST_KEY)
 
-        req = requests.get(f'{SERVER_URL}/api/logout')
+        req = requests.get(f'{SERVER_URL}/api/logout', headers={"Authorization": self.id})
         if req.status_code == 200:
             print("All done!")
 
-    def encryptor(self, algorithm, mode, key, data, encryptor=None, block_size=None):
-        if encryptor:
-            if mode == 1:
-                padder = padding.PKCS7(block_size).padder()
-                padded_data = padder.update(data)
-                padded_data += padder.finalize()
-                ct = encryptor.update(data) + encryptor.finalize()
-            else:
-                ct = encryptor.update(data) + encryptor.finalize()
-            return ct, encryptor
+    def encryptor(self, algorithm, mode, key, data):
+        iv = os.urandom(algorithms_options[algorithm].block_size // 8)
+        cipher = Cipher(algorithms_options[algorithm](
+            key), cipher_modes_options[mode](iv))
+        encryptor = cipher.encryptor()
+        if mode == 1:
+            padder = padding.PKCS7(
+                algorithms_options[algorithm].block_size).padder()
+            padded_data = padder.update(data)
+            padded_data += padder.finalize()
+            ct = encryptor.update(padded_data) + encryptor.finalize()
         else:
-            # TODO Generate through secret module, also verify if all algorithms used are 128bits to generate only 16 bytes
-            iv = os.urandom(algorithms_options[algorithm].block_size // 8)
-            cipher = Cipher(algorithms_options[algorithm](
-                key), cipher_modes_options[mode](iv))
-            encryptor = cipher.encryptor()
-            if mode == 1:
-                padder = padding.PKCS7(
-                    algorithms_options[algorithm].block_size).padder()
-                padded_data = padder.update(data)
-                padded_data += padder.finalize()
-                ct = encryptor.update(padded_data) + encryptor.finalize()
-            else:
-                ct = encryptor.update(data) + encryptor.finalize()
-            return ct, encryptor, iv
+            ct = encryptor.update(data) + encryptor.finalize()
+        return ct, encryptor, iv
 
     def decryptor(self, algorithm, mode, key, data, iv=None, decryptor=None, block_size=None, last=True):
         if decryptor:
@@ -441,7 +439,7 @@ class Client:
 
     def dh_digest_key(self):
         private_key = ec.generate_private_key(ec.SECP384R1())
-        req = requests.get(f'{SERVER_URL}/api/digest_key')
+        req = requests.get(f'{SERVER_URL}/api/digest_key', headers={"Authorization": self.id})
         if req.status_code == 200:
             response = req.json()
 
@@ -469,7 +467,7 @@ class Client:
             serialized_public).decode('latin').strip()}
 
         req = requests.post(f'{SERVER_URL}/api/digest_key', data=json.dumps(
-            response).encode('latin'), headers={"content-type": "application/json"})
+            response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
 
         if req.status_code != 200:
             quit()
@@ -477,7 +475,7 @@ class Client:
     def dh_message_key(self):
         private_key = ec.generate_private_key(ec.SECP384R1())
 
-        req = requests.get(f'{SERVER_URL}/api/key')
+        req = requests.get(f'{SERVER_URL}/api/key', headers={"Authorization": self.id})
         if req.status_code == 200:
             response = req.json()
 
@@ -505,13 +503,12 @@ class Client:
             serialized_public).decode('latin').strip()}
 
         req = requests.post(f'{SERVER_URL}/api/key', data=json.dumps(
-            response).encode('latin'), headers={"content-type": "application/json"})
+            response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
 
         if req.status_code != 200:
             quit()
 
     def digest(self, key, hash, data):
-        # . The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
         h = hmac.HMAC(key, hashes_options[hash]())
         h.update(data)
         return h.finalize()
@@ -522,7 +519,6 @@ class Client:
         return digest.finalize()
 
     def verify_digest(self, key, hash, data, digest):
-        # . The key should be randomly generated bytes and is recommended to be equal in length to the digest_size of the hash function chosen. You must keep the key secret.
         h = hmac.HMAC(key, hashes_options[hash]())
         h.update(data)
         try:
