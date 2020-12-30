@@ -4,15 +4,20 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import os
 
+# Utilização de Cifra Híbrida para cifrar as músicas
+
 f = open("../server_certs/server-localhost_pk.pem", "rb")
 private_key = serialization.load_pem_private_key(f.read(), None)
 
 public_key = private_key.public_key()
 
+# Ficheiro com as informações relativas às músicas cifradas, nomeadamente nome do ficheiro,
+# chave de encriptação e iv
 f_info = open("file_info.txt", "ab")
 
 for root, dirs, files in os.walk("./catalog/"):
     for filename in files:
+        # Evita os ficheiros gerados pelo MacOS
         if filename != '.DS_Store':
             block_size = algorithms.AES.block_size // 8
             iv = os.urandom(block_size)
@@ -24,10 +29,12 @@ for root, dirs, files in os.walk("./catalog/"):
             encryptor = cipher.encryptor()
 
             f = open("./catalog/" + filename, "rb")
-            f2 = open("./encrypted_catalog/" + filename.split(".")[0] + ".bin", "wb")
-            counter=0
+            f2 = open("./encrypted_catalog/" +
+                      filename.split(".")[0] + ".bin", "wb")
+            counter = 0
             content = f.read(block_size)
 
+            # Cifra da música recorrendo a uma Cifra Simétrica com chave aleatória
             while True:
                 if len(content) < block_size:
                     ct = encryptor.update(content) + encryptor.finalize()
@@ -37,13 +44,14 @@ for root, dirs, files in os.walk("./catalog/"):
 
                 f2.write(ct)
 
-                counter+=1
+                counter += 1
                 f.seek(counter*block_size)
                 content = f.read(block_size)
 
             f.close()
-            f2.close()                 
+            f2.close()
 
+            # Cifra Assimétrica da chave aleatória usada para cifrar a música permitindo apenas acesso pelo servidor
             encrypted_key = public_key.encrypt(
                 key,
                 padding.OAEP(
@@ -53,11 +61,10 @@ for root, dirs, files in os.walk("./catalog/"):
                 )
             )
 
-            filename=bytes(filename, encoding='utf8')
-            diff=128-len(filename)
-            filename+=bytes([diff]*diff)
-
+            # Primeiros 128 bits da linha alocados para o nome do ficheiro, recorrendo a padding
+            filename = bytes(filename, encoding='utf8')
+            diff = 128-len(filename)
+            filename += bytes([diff]*diff)
 
             f_info.write(filename+encrypted_key+iv)
 f_info.close
-
