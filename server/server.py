@@ -21,9 +21,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography import x509
-from datetime import datetime
-import PyKCS11
-from cryptography.x509.oid import ExtendedKeyUsageOID
+from datetime import datetime, timedelta
+from cryptography.x509.oid import NameOID
 
 import random
 
@@ -174,12 +173,12 @@ def verify_date(cert):
         return True
 
 
-def sign(nounce):
+def sign(bytes):
     with open("../server_certs/server-localhost_pk.pem", "rb") as f:
         private_key = serialization.load_pem_private_key(f.read(), None)
 
     signature = private_key.sign(
-        nounce,
+        bytes,
         asymmetric.padding.PSS(
             mgf=asymmetric.padding.MGF1(hashes.SHA256()),
             salt_length=asymmetric.padding.PSS.MAX_LENGTH
@@ -409,7 +408,9 @@ class MediaServer(resource.Resource):
                         hashes.SHA1()
                     )
                     responseCode = 200
+                    CLIENT_INFO[id]['serial_number_cc'] = client_cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)[0].value
                 except InvalidSignature:
+                    print("Invalid Signature Error")
                     pass
 
         request.setResponseCode(responseCode)
@@ -519,24 +520,83 @@ class MediaServer(resource.Resource):
             b"content-type", b"application/json")
         return json.dumps({'options': options.decode('latin'), 'digest': options_digest.decode('latin'), 'iv': iv.decode('latin')}).encode('latin')
 
+    def get_license(self, request):
+        id = request.getHeader('Authorization')
+        media_id = request.args.get(b'id', [None])[0].decode('latin')
+
+        date = datetime.now() + timedelta(hours=1)
+        new_license = {'serial_number_cc': CLIENT_INFO[id]['serial_number_cc'],
+        'media_id': media_id,
+        'date_of_expiration': date.strftime("%Y-%m-%d-%H:%M:%S")
+        } 
+
+        new_license = json.dumps(new_license).encode('latin')
+        
+        signature = sign(new_license)
+
+        result = base64.b64encode(new_license) + b"-" + base64.b64encode(signature)
+
+        with open("./licenses/"+str(CLIENT_INFO[id]['serial_number_cc'])+"_"+str(media_id)+"_"+str(date.strftime("%Y-%m-%d-%H:%M:%S"))+".txt", "wb") as f:
+            f.write(result)
+            f.close()
+
+        result, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], result)
+
+        result_digest = self.digest(CLIENT_INFO[id]['digest_key'],
+                                     CLIENT_INFO[id]['options']['selected_hash'], result)
+
+        request.responseHeaders.addRawHeader(
+            b"content-type", b"application/json")
+        return json.dumps({'license': result.decode('latin'), 'digest': result_digest.decode('latin'), 'iv': iv.decode('latin')}).encode('latin')
+
     # Send the list of media files to clients
     def do_list(self, request):
 
-        #auth = request.getHeader('Authorization')
-        # if not auth:
-        #    request.setResponseCode(401)
-        #    return 'Not authorized'
+        id = request.getHeader('Authorization')
+        print(id)
 
         # Build list
         media_list = []
         for media_id in CATALOG:
             media = CATALOG[media_id]
+            has_access = False
+            for root, dirs, files in os.walk("./licenses/"):
+                for filename in files:
+                    filename_split = filename.split("_")
+                    if filename_split[1] == media_id and CLIENT_INFO[id]['serial_number_cc'] == filename_split[0] and datetime.strptime(filename_split[2].split(".")[0], "%Y-%m-%d-%H:%M:%S")>datetime.now():
+                        with open("./licenses/"+filename, "rb") as f:
+                            print("Estou aqui")
+                            content = f.read()
+                            content = content.split(b"-")
+                            license = base64.b64decode(content[0])
+                            signature = base64.b64decode(content[1])
+
+                            try:
+                                server_cert.public_key().verify(
+                                    signature,
+                                    license,
+                                    asymmetric.padding.PSS(
+                                        mgf=asymmetric.padding.MGF1(
+                                            hashes.SHA256()),
+                                        salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                                    ),
+                                    hashes.SHA256()
+                                )
+                                has_access=True
+                            except InvalidSignature:
+                                print("Invalid signature")
+                                pass
+                                    
+
+
             media_list.append({
                 'id': media_id,
                 'name': media['name'],
                 'description': media['description'],
                 'chunks': math.ceil(media['file_size'] / CHUNK_SIZE),
-                'duration': media['duration']
+                'duration': media['duration'],
+                'has_access': has_access
             })
 
         # Return list to client
@@ -667,6 +727,9 @@ class MediaServer(resource.Resource):
 
             elif request.path == b'/api/logout':
                 return self.logout(request)
+
+            elif request.path == b'/api/get_music':
+                return self.get_license(request)
 
             elif request.path == b'/api/auth':
                 return self.get_auth(request)

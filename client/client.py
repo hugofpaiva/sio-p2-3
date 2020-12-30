@@ -313,30 +313,40 @@ class Client:
                 quit()
 
         # Get a list of media files
-        req = requests.get(f'{SERVER_URL}/api/list')
-        if req.status_code == 200:
-            print("Got Server List")
-
-        media_list = req.json()
-
-        # Present a simple selection menu
-        idx = 0
-        print("MEDIA CATALOG\n")
-        for item in media_list:
-            print(f'{idx} - {media_list[idx]["name"]}')
-        print("----")
-
+        media_list = None
         while True:
-            selection = input("Select a media file number (q to quit): ")
-            if selection.strip() == 'q':
-                sys.exit(0)
+            req = requests.get(f'{SERVER_URL}/api/list', headers={"Authorization": self.id})
+            if req.status_code == 200:
+                print("Got Server List")
 
-            if not selection.isdigit():
-                continue
+            media_list = req.json()
 
-            selection = int(selection)
-            if 0 <= selection < len(media_list):
+            # Present a simple selection menu
+            idx = 0
+            print("MEDIA CATALOG\n")
+            for item in media_list:
+                print(f'{idx} - {media_list[idx]["name"]} - {media_list[idx]["has_access"]}')
+            print("----")
+
+            while True:
+                selection = input("Select a media file number (q to quit): ")
+                if selection.strip() == 'q':
+                    sys.exit(0)
+
+                if not selection.isdigit():
+                    continue
+
+                selection = int(selection)
+                if 0 <= selection < len(media_list):
+                    break
+
+            if not media_list[selection]['has_access']:
+                req = requests.get(f'{SERVER_URL}/api/get_music?id={media_list[selection]["id"]}', headers={"Authorization": self.id})
+                if req.status_code == 200:
+                    print("Got new song!")
+            else:
                 break
+
 
         # Example: Download first file
         media_item = media_list[selection]
