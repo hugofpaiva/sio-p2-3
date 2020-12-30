@@ -489,9 +489,9 @@ class MediaServer(resource.Resource):
 
         id = request.getHeader('Authorization')
 
-        if request.path == b'/api/digest_key' and CLIENT_INFO[id]['dh_digest_private_key']:
+        if request.path == b'/api/digest_key':
             CLIENT_INFO[id]['dh_digest_private_key'] = private_key
-        elif request.path == b'/api/key' and CLIENT_INFO[id]['dh_private_key']:
+        elif request.path == b'/api/key':
             CLIENT_INFO[id]['dh_private_key'] = private_key
         else:
             request.setResponseCode(401)
@@ -524,10 +524,10 @@ class MediaServer(resource.Resource):
 
         shared_key = None
 
-        if request.path == b'/api/digest_key' and CLIENT_INFO[id]['dh_digest_private_key']:
+        if request.path == b'/api/digest_key' and 'dh_digest_private_key' in CLIENT_INFO[id]:
             shared_key = CLIENT_INFO[id]['dh_digest_private_key'].exchange(
                 ec.ECDH(), loaded_public_key)
-        elif request.path == b'/api/key' and CLIENT_INFO[id]['dh_private_key']:
+        elif request.path == b'/api/key' and 'dh_private_key' in CLIENT_INFO[id]:
             shared_key = CLIENT_INFO[id]['dh_private_key'].exchange(
                 ec.ECDH(), loaded_public_key)
         else:
