@@ -313,101 +313,118 @@ class Client:
                 quit()
 
         # Get a list of media files
-        media_list = None
         while True:
-            req = requests.get(f'{SERVER_URL}/api/list', headers={"Authorization": self.id})
-            if req.status_code == 200:
-                print("Got Server List")
-
-            media_list = req.json()
-
-            # Present a simple selection menu
-            idx = 0
-            print("MEDIA CATALOG\n")
-            for item in media_list:
-                print(f'{idx} - {media_list[idx]["name"]} - {media_list[idx]["has_access"]}')
-            print("----")
-
+            media_list = None
             while True:
-                selection = input("Select a media file number (q to quit): ")
-                if selection.strip() == 'q':
-                    sys.exit(0)
+                req = requests.get(f'{SERVER_URL}/api/list', headers={"Authorization": self.id})
+                if req.status_code == 200:
+                    print("Got Server List")
 
-                if not selection.isdigit():
-                    continue
+                media_list = req.json()
 
-                selection = int(selection)
-                if 0 <= selection < len(media_list):
+                # Present a simple selection menu
+                idx = 0
+                print("MEDIA CATALOG\n")
+                for item in media_list:
+                    print(f'{idx} - {media_list[idx]["name"]} - Access: {media_list[idx]["has_access"]}')
+                print("----")
+
+                while True:
+                    selection = input("Select a media file number (q to quit). If a song with no access is selected, a new license will be requested: ")
+                    if selection.strip() == 'q':
+                        req = requests.get(f'{SERVER_URL}/api/logout', headers={"Authorization": self.id})
+                        if req.status_code == 200:
+                            print("All done!")
+                            sys.exit(0)
+
+                    if not selection.isdigit():
+                        continue
+
+                    selection = int(selection)
+                    if 0 <= selection < len(media_list):
+                        break
+
+                if not media_list[selection]['has_access']:
+                    req = requests.get(f'{SERVER_URL}/api/get_music?id={media_list[selection]["id"]}', headers={"Authorization": self.id})
+                    if req.status_code == 200:
+                        print("Got new song!")
+                        response = req.json()
+                        digest = response['digest'].encode('latin')
+                        license = response['license'].encode('latin')
+                        iv = response['iv'].encode('latin')
+
+                        if self.verify_digest(self.DIGEST_KEY, self.selected_hash, license, digest):
+                            license, decryptor_var = self.decryptor(
+                                self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, license, iv)
+                            decoded_license = license.split(b"-")
+                            decoded_license = base64.b64decode(decoded_license[0])
+                            decoded_license = json.loads(decoded_license.decode('latin'))
+                            with open("./licenses/"+str(decoded_license['serial_number_cc'])+"_"+str(decoded_license['media_id'])+"_"+str(decoded_license['date_of_expiration'])+".txt", "wb") as f:
+                                f.write(license)
+                                f.close()
+                            
+                    else:
+                        print("Error getting license")
+                else:
                     break
 
-            if not media_list[selection]['has_access']:
-                req = requests.get(f'{SERVER_URL}/api/get_music?id={media_list[selection]["id"]}', headers={"Authorization": self.id})
-                if req.status_code == 200:
-                    print("Got new song!")
+
+            # Example: Download first file
+            media_item = media_list[selection]
+            print(f"Playing {media_item['name']}")
+
+            # Detect if we are running on Windows or Linux
+            # You need to have ffplay or ffplay.exe in the current folder
+            # In alternative, provide the full path to the executable
+            if os.name == 'nt':
+                proc = subprocess.Popen(
+                    ['ffplay.exe', '-i', '-'], stdin=subprocess.PIPE)
             else:
-                break
+                proc = subprocess.Popen(
+                    ['ffplay', '-i', '-'], stdin=subprocess.PIPE)
 
+            decryptor_var = None
 
-        # Example: Download first file
-        media_item = media_list[selection]
-        print(f"Playing {media_item['name']}")
+            # Get data from server and send it to the ffplay stdin through a pipe
+            for chunk_id in range(media_item['chunks']):
+                req = requests.get(
+                    f'{SERVER_URL}/api/download?id={media_item["id"]}&chunk={chunk_id}', headers={"Authorization": self.id})
+                chunk = req.json()
 
-        # Detect if we are running on Windows or Linux
-        # You need to have ffplay or ffplay.exe in the current folder
-        # In alternative, provide the full path to the executable
-        if os.name == 'nt':
-            proc = subprocess.Popen(
-                ['ffplay.exe', '-i', '-'], stdin=subprocess.PIPE)
-        else:
-            proc = subprocess.Popen(
-                ['ffplay', '-i', '-'], stdin=subprocess.PIPE)
+                if chunk_id == 0:
+                    iv = chunk['iv'].encode('latin')
 
-        decryptor_var = None
+                digest = chunk['digest'].encode('latin')
 
-        # Get data from server and send it to the ffplay stdin through a pipe
-        for chunk_id in range(media_item['chunks']):
-            req = requests.get(
-                f'{SERVER_URL}/api/download?id={media_item["id"]}&chunk={chunk_id}', headers={"Authorization": self.id})
-            chunk = req.json()
+                data = chunk['data'].encode('latin')
 
-            if chunk_id == 0:
-                iv = chunk['iv'].encode('latin')
+                if not self.verify_digest(self.DIGEST_KEY, self.selected_hash, data, digest):
+                    print("MITM???")
+                    quit()
 
-            digest = chunk['digest'].encode('latin')
+                if decryptor_var:
+                    data, decryptor_var = self.decryptor(
+                        self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, data, decryptor=decryptor_var)
+                else:
+                    data, decryptor_var = self.decryptor(
+                        self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, data, iv)
 
-            data = chunk['data'].encode('latin')
+                data = binascii.a2b_base64(data)
 
-            if not self.verify_digest(self.DIGEST_KEY, self.selected_hash, data, digest):
-                print("MITM???")
-                quit()
+                try:
 
-            if decryptor_var:
-                data, decryptor_var = self.decryptor(
-                    self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, data, decryptor=decryptor_var)
-            else:
-                data, decryptor_var = self.decryptor(
-                    self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, data, iv)
+                    proc.stdin.write(data)
+                except:
+                    break
 
-            data = binascii.a2b_base64(data)
-
-            try:
-
-                proc.stdin.write(data)
-            except:
-                break
-
-            if chunk_id % 5 == 0:
-                self.dh_digest_key()
-                self.dh_message_key()
-            else:
-                self.MESSAGE_KEY = self.simple_digest(
-                    self.selected_hash, self.MESSAGE_KEY)
-                self.DIGEST_KEY = self.simple_digest(
-                    self.selected_hash, self.DIGEST_KEY)
-
-        req = requests.get(f'{SERVER_URL}/api/logout', headers={"Authorization": self.id})
-        if req.status_code == 200:
-            print("All done!")
+                if chunk_id % 5 == 0:
+                    self.dh_digest_key()
+                    self.dh_message_key()
+                else:
+                    self.MESSAGE_KEY = self.simple_digest(
+                        self.selected_hash, self.MESSAGE_KEY)
+                    self.DIGEST_KEY = self.simple_digest(
+                        self.selected_hash, self.DIGEST_KEY)
 
     def encryptor(self, algorithm, mode, key, data):
         iv = os.urandom(algorithms_options[algorithm].block_size // 8)
@@ -540,6 +557,5 @@ class Client:
 
 if __name__ == '__main__':
     c = Client()
-    while True:
-        c.main()
-        time.sleep(1)
+    c.main()
+
