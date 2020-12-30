@@ -36,7 +36,7 @@ SERVER_URL = 'http://127.0.0.1:8080'
 
 algorithms_options = [algorithms.AES, algorithms.Camellia]
 hashes_options = [hashes.SHA256, hashes.SHA3_256]
-cipher_modes_options = [modes.CTR, modes.CBC, modes.OFB, modes.CFB]
+cipher_modes_options = [modes.CTR, modes.OFB, modes.CFB]
 
 
 class Client:
@@ -154,78 +154,6 @@ class Client:
 
         self.get_cc()
 
-        # Getting server certificate
-        req = requests.get(f'{SERVER_URL}/api/auth')
-        if req.status_code == 200:
-            response = req.json()
-            certificate = binascii.a2b_base64(
-                response['certificate'].encode('latin'))
-            self.server_cert = x509.load_pem_x509_certificate(certificate)
-
-            if not self.full_cert_verify(self.server_cert, self.root_ca_cert):
-                quit()
-
-            nounce = os.urandom(32)
-
-            response = {'nounce': binascii.b2a_base64(
-                nounce).decode('latin').strip()}
-
-            req = requests.post(f'{SERVER_URL}/api/auth', data=json.dumps(
-                response).encode('latin'), headers={"content-type": "application/json"})
-
-            if req.status_code == 200:
-                response = req.json()
-                signed_nounce = binascii.a2b_base64(
-                    response['signed_nounce'].encode('latin'))
-
-                try:
-                    self.server_cert.public_key().verify(
-                        signed_nounce,
-                        nounce,
-                        asymmetric.padding.PSS(
-                            mgf=asymmetric.padding.MGF1(
-                                primitives.hashes.SHA256()),
-                            salt_length=asymmetric.padding.PSS.MAX_LENGTH
-                        ),
-                        primitives.hashes.SHA256()
-                    )
-                    print("Servidor Autenticado")
-                except InvalidSignature:
-                    quit()
-
-            else:
-                quit()
-
-        else:
-            quit()
-    
-        # User Authentication
-        req = requests.get(f'{SERVER_URL}/api/cc_auth', headers={"Authorization": self.id})
-        if req.status_code == 200:
-            response = req.json()
-            nounce = binascii.a2b_base64(
-                response['nounce'].encode('latin'))
-
-            mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
-
-            signed_nounce = bytes(self.session.sign(
-                self.private_key, nounce, mechanism))
-        else:
-            quit()
-
-        response = {'certificate': binascii.b2a_base64(
-            self.cert.public_bytes(Encoding.PEM)).decode('latin').strip(), 'signed_nounce': binascii.b2a_base64(signed_nounce).decode('latin').strip()}
-
-        req = requests.post(f'{SERVER_URL}/api/cc_auth', data=json.dumps(
-            response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
-
-        if req.status_code == 200:
-            print("Utilizador Autenticado")
-        else:
-            print("Authentication of user error")
-            quit()
-
-
         # Choosing options
         # Algorithm Option
         # 0. AES
@@ -312,6 +240,124 @@ class Client:
                 print("MITM???")
                 quit()
 
+
+         # Getting server certificate
+        req = requests.get(f'{SERVER_URL}/api/auth', headers={"Authorization": self.id})
+        if req.status_code == 200:
+            response = req.json()
+            digest = response['digest'].encode('latin')
+            certificate = response['certificate'].encode('latin')
+            iv = response['iv'].encode('latin')
+
+            if self.verify_digest(self.DIGEST_KEY, self.selected_hash, certificate, digest):
+                certificate, decryptor_var = self.decryptor(
+                    self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, certificate, iv)
+            else:
+                quit()
+
+            certificate = binascii.a2b_base64(certificate)
+            self.server_cert = x509.load_pem_x509_certificate(certificate)
+
+            if not self.full_cert_verify(self.server_cert, self.root_ca_cert):
+                quit()
+
+            server_nounce = os.urandom(32)
+
+            nounce = binascii.b2a_base64(server_nounce)
+
+            nounce, encryptor_cypher, iv = self.encryptor(self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, nounce)
+
+            nounce_digest = self.digest(self.DIGEST_KEY,
+                                     self.selected_hash, nounce)
+
+            response = {'nounce': nounce.decode('latin'), 'digest': nounce_digest.decode('latin'), 'iv': iv.decode('latin')}
+
+            req = requests.post(f'{SERVER_URL}/api/auth', data=json.dumps(
+                response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
+
+            if req.status_code == 200:
+                response = req.json()
+                digest = response['digest'].encode('latin')
+                signed_nounce = response['signed_nounce'].encode('latin')
+                iv = response['iv'].encode('latin')
+
+                if self.verify_digest(self.DIGEST_KEY, self.selected_hash, signed_nounce, digest):
+                    signed_nounce, decryptor_var = self.decryptor(
+                        self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, signed_nounce, iv)
+                else:      
+                    quit()
+
+                signed_nounce = binascii.a2b_base64(signed_nounce)
+
+                try:
+                    self.server_cert.public_key().verify(
+                        signed_nounce,
+                        server_nounce,
+                        asymmetric.padding.PSS(
+                            mgf=asymmetric.padding.MGF1(
+                                primitives.hashes.SHA256()),
+                            salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                        ),
+                        primitives.hashes.SHA256()
+                    )
+                    print("Servidor Autenticado")
+                except InvalidSignature:
+                    quit()
+
+            else:
+                quit()
+
+        else:
+            quit()
+    
+        # User Authentication
+        req = requests.get(f'{SERVER_URL}/api/cc_auth', headers={"Authorization": self.id})
+        if req.status_code == 200:
+            response = req.json()
+            digest = response['digest'].encode('latin')
+            nounce = response['nounce'].encode('latin')
+            iv = response['iv'].encode('latin')
+
+            if self.verify_digest(self.DIGEST_KEY, self.selected_hash, nounce, digest):
+                nounce, decryptor_var = self.decryptor(
+                    self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, nounce, iv)
+            else:
+                quit()
+
+            nounce = binascii.a2b_base64(nounce)
+
+            mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
+
+            signed_nounce = bytes(self.session.sign(
+                self.private_key, nounce, mechanism))
+        else:
+            quit()
+
+        certificate = binascii.b2a_base64(self.cert.public_bytes(Encoding.PEM))
+        signed_nounce = binascii.b2a_base64(signed_nounce)
+        
+        certificate, encryptor_cypher, certificate_iv = self.encryptor(self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, certificate)
+
+        certificate_digest = self.digest(self.DIGEST_KEY,
+                                     self.selected_hash, certificate)
+
+        signed_nounce, encryptor_cypher, signed_nounce_iv = self.encryptor(self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, signed_nounce)
+
+        signed_nounce_digest = self.digest(self.DIGEST_KEY,
+                                     self.selected_hash, signed_nounce)
+
+        response = {'certificate': certificate.decode('latin'), 'certificate_digest': certificate_digest.decode('latin'), 'certificate_iv': certificate_iv.decode('latin'),
+         'signed_nounce': signed_nounce.decode('latin'), 'signed_nounce_digest': signed_nounce_digest.decode('latin'), 'signed_nounce_iv': signed_nounce_iv.decode('latin')}
+
+        req = requests.post(f'{SERVER_URL}/api/cc_auth', data=json.dumps(
+            response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
+
+        if req.status_code == 200:
+            print("Utilizador Autenticado")
+        else:
+            print("Authentication of user error")
+            quit()
+
         # Get a list of media files
         while True:
             media_list = None
@@ -320,7 +366,20 @@ class Client:
                 if req.status_code == 200:
                     print("Got Server List")
 
-                media_list = req.json()
+
+                response = req.json()
+                digest = response['digest'].encode('latin')
+                media_list = response['media_list'].encode('latin')
+                iv = response['iv'].encode('latin')
+
+                if self.verify_digest(self.DIGEST_KEY, self.selected_hash, media_list, digest):
+                    media_list, decryptor_var = self.decryptor(
+                    self.selected_algorithm, self.selected_mode, self.MESSAGE_KEY, media_list, iv)
+
+                    media_list = json.loads(media_list.decode('latin'))['media_list']
+                else:
+                    print("Error verify digest")
+                    quit()
 
                 # Present a simple selection menu
                 idx = 0
@@ -411,12 +470,6 @@ class Client:
 
                 data = binascii.a2b_base64(data)
 
-                try:
-
-                    proc.stdin.write(data)
-                except:
-                    break
-
                 if chunk_id % 5 == 0:
                     self.dh_digest_key()
                     self.dh_message_key()
@@ -426,42 +479,30 @@ class Client:
                     self.DIGEST_KEY = self.simple_digest(
                         self.selected_hash, self.DIGEST_KEY)
 
+                try:
+                    proc.stdin.write(data)
+                except:
+                    break
+
+                
+
     def encryptor(self, algorithm, mode, key, data):
         iv = os.urandom(algorithms_options[algorithm].block_size // 8)
         cipher = Cipher(algorithms_options[algorithm](
             key), cipher_modes_options[mode](iv))
         encryptor = cipher.encryptor()
-        if mode == 1:
-            padder = padding.PKCS7(
-                algorithms_options[algorithm].block_size).padder()
-            padded_data = padder.update(data)
-            padded_data += padder.finalize()
-            ct = encryptor.update(padded_data) + encryptor.finalize()
-        else:
-            ct = encryptor.update(data) + encryptor.finalize()
+        ct = encryptor.update(data) + encryptor.finalize()
         return ct, encryptor, iv
 
-    def decryptor(self, algorithm, mode, key, data, iv=None, decryptor=None, block_size=None, last=True):
+    def decryptor(self, algorithm, mode, key, data, iv=None, decryptor=None):
         if decryptor:
             data = decryptor.update(data)
-            if mode == 1 and last:
-                if block_size is None:
-                    block_size = algorithms_options[algorithm].block_size
-                unpadder = padding.PKCS7(block_size).unpadder()
-                data = unpadder.update(data)
-                data = data + unpadder.finalize()
             return data, decryptor
         else:
             cipher = Cipher(algorithms_options[algorithm](
                 key), cipher_modes_options[mode](iv))
             decryptor = cipher.decryptor()
             data = decryptor.update(data)
-            if mode == 1 and last:
-                if block_size is None:
-                    block_size = algorithms_options[algorithm].block_size
-                unpadder = padding.PKCS7(block_size).unpadder()
-                data = unpadder.update(data)
-                data = data + unpadder.finalize()
             return data, decryptor
 
     def dh_digest_key(self):
