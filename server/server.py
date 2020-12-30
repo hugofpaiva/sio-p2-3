@@ -1,16 +1,15 @@
-#!/usr/bin/env python
-
-from base64 import decode
-from requests.models import Response
 from twisted.web import server, resource
-from twisted.internet import reactor, defer
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from twisted.internet import reactor
+
 import logging
 import binascii
 import json
 import os
 import math
 import base64
+
+from datetime import datetime, timedelta
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -21,7 +20,6 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography import x509
-from datetime import datetime, timedelta
 from cryptography.x509.oid import NameOID
 
 import random
@@ -41,24 +39,23 @@ CATALOG = {'898a08080d1840793122b7e118b27a95d117ebce':
                'file_size': 3407202
            }
            }
-
 SONGS = {}
 
 CATALOG_BASE = 'catalog'
 CHUNK_SIZE = 1024 * 4
 
-algorithms_options = [algorithms.AES, algorithms.Camellia]
-hashes_options = [hashes.SHA256, hashes.SHA3_256]
-cipher_modes_options = [modes.CTR, modes.OFB, modes.CFB]
+ALGORITHMS_OPTIONS = [algorithms.AES, algorithms.Camellia]
+HASHES_OPTIONS = [hashes.SHA256, hashes.SHA3_256]
+CIPHER_MODES_OPTIONS = [modes.CTR, modes.OFB, modes.CFB]
 
 CLIENT_INFO = {}
 
-server_cert = None
+SERVER_CERT = None
 
-cc_certs = {}
-root_certs = {}
+CC_CERTS = {}
+ROOT_CERTS = {}
+CRLS = []
 
-crl = []
 
 def load_cert(path):
     with open(path, 'rb') as f:
@@ -84,32 +81,32 @@ def get_chain():
             if filename != '.DS_Store':
                 certificate = load_cert("../cc_certs/" + filename)
                 if verify_date(certificate):
-                    cc_certs[certificate.subject] = certificate
+                    CC_CERTS[certificate.subject] = certificate
 
     for root, dirs, files in os.walk("../root_certs/"):
         for filename in files:
             if filename != '.DS_Store':
                 certificate = load_cert("../root_certs/" + filename)
                 if verify_date(certificate):
-                    root_certs[certificate.subject] = certificate
+                    ROOT_CERTS[certificate.subject] = certificate
 
 
-def get_crl():
+def get_crls():
     for root, dirs, files in os.walk("../cc_crl/"):
         for filename in files:
             if filename != '.DS_Store':
-                crl.append(load_crl("../cc_crl/" + filename))
+                CRLS.append(load_crl("../cc_crl/" + filename))
 
 
 def get_cc_chain(cert, chain={}):
     chain[cert.subject] = cert
 
-    if cert.issuer == cert.subject and cert.issuer in root_certs:
+    if cert.issuer == cert.subject and cert.issuer in ROOT_CERTS:
         return chain
-    elif cert.issuer in root_certs:
-        return get_cc_chain(root_certs[cert.issuer], chain)
-    elif cert.issuer in cc_certs:
-        return get_cc_chain(cc_certs[cert.issuer], chain)
+    elif cert.issuer in ROOT_CERTS:
+        return get_cc_chain(ROOT_CERTS[cert.issuer], chain)
+    elif cert.issuer in CC_CERTS:
+        return get_cc_chain(CC_CERTS[cert.issuer], chain)
 
     # Trust Chain isn't complete
     return False
@@ -117,7 +114,7 @@ def get_cc_chain(cert, chain={}):
 
 def full_chain_cert_verify(chain, cert, first=False):
     issuer_cert = chain[cert.issuer]
-    if verify_date(cert) and verify_purpose(cert, first) and verify_crl(cert) and verify_signatures(cert, issuer_cert):
+    if verify_date(cert) and verify_purpose(cert, first) and verify_crls(cert) and verify_signatures(cert, issuer_cert):
         if cert.issuer == issuer_cert.issuer:
             print("Reached valid root CA")
             return True
@@ -129,9 +126,9 @@ def full_chain_cert_verify(chain, cert, first=False):
         return False
 
 
-def verify_crl(cert):
-    for list in crl:
-        if list.get_revoked_certificate_by_serial_number(cert.serial_number):
+def verify_crls(cert):
+    for crl in CRLS:
+        if crl.get_revoked_certificate_by_serial_number(cert.serial_number):
             return False
     return True
 
@@ -191,23 +188,7 @@ def sign(bytes):
     return signature
 
 
-def decrypt_uiid(id):
-    # Get server private key
-    with open("../server_certs/server-localhost_pk.pem", "rb") as server_cert_file:
-        private_key = serialization.load_pem_private_key(
-            server_cert_file.read(), None)
-
-        return private_key.decrypt(
-            id,
-            asymmetric.padding.OAEP(
-                mgf=asymmetric.padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
-        )
-
-
-def decrypt_catalog(os_walk_path):
+def decrypt_catalog():
 
     private_key = None
     file_name = None
@@ -240,132 +221,135 @@ def decrypt_catalog(os_walk_path):
         )
 
         # Go through encrypted song directory
-        for root, dirs, files in os.walk(os_walk_path):
+        for root, dirs, files in os.walk("./encrypted_catalog/"):
             for filename in files:
-                if filename.split('.')[0] == file_name.split('.')[0]:
+                if filename != '.DS_Store':
+                    if filename.split('.')[0] == file_name.split('.')[0]:
 
-                    block_size = algorithms.AES.block_size // 8
-                    # Open song file for current key
-                    with open(os_walk_path + filename, mode='rb') as encrypted_song_file:
-                        counter = 0
-                        content = encrypted_song_file.read(block_size)
-
-                        cipher = Cipher(algorithms.AES(
-                            decrypted_key), modes.OFB(iv))
-                        decryptor = cipher.decryptor()
-
-                        SONGS[file_name] = bytearray()
-
-                        while True:
-                            if len(content) < block_size:
-                                SONGS[file_name] += bytearray(
-                                    decryptor.update(content) + decryptor.finalize())
-                                break
-                            else:
-                                SONGS[file_name] += bytearray(
-                                    decryptor.update(content))
-
-                            counter += 1
-                            encrypted_song_file.seek(counter*block_size)
+                        block_size = algorithms.AES.block_size // 8
+                        # Open song file for current key
+                        with open("./encrypted_catalog/" + filename, mode='rb') as encrypted_song_file:
+                            counter = 0
                             content = encrypted_song_file.read(block_size)
 
+                            cipher = Cipher(algorithms.AES(
+                                decrypted_key), modes.OFB(iv))
+                            decryptor = cipher.decryptor()
+
+                            SONGS[file_name] = bytearray()
+
+                            while True:
+                                if len(content) < block_size:
+                                    SONGS[file_name] += bytearray(
+                                        decryptor.update(content) + decryptor.finalize())
+                                    break
+                                else:
+                                    SONGS[file_name] += bytearray(
+                                        decryptor.update(content))
+
+                                counter += 1
+                                encrypted_song_file.seek(counter*block_size)
+                                content = encrypted_song_file.read(block_size)
+
     return True
+
 
 def license_check(media_id, id):
     has_access = False
     for root, dirs, files in os.walk("./licenses/"):
-                for filename in files:
-                    filename_split = filename.split("_")
-                    # Verificação inicial
-                    if filename_split[1] == media_id and CLIENT_INFO[id]['serial_number_cc'] == filename_split[0] and datetime.strptime(filename_split[2].split(".")[0], "%Y-%m-%d-%H-%M-%S") > datetime.now():
-                        with open("./licenses/"+filename, "rb") as f:
-                            content = f.read()
-                            content = content.split(b"-")
-                            license = base64.b64decode(content[0])
-                            signature = base64.b64decode(content[1])
-                            try:
-                                server_cert.public_key().verify(
-                                    signature,
-                                    license,
-                                    asymmetric.padding.PSS(
-                                        mgf=asymmetric.padding.MGF1(
-                                            hashes.SHA256()),
-                                        salt_length=asymmetric.padding.PSS.MAX_LENGTH
-                                    ),
-                                    hashes.SHA256()
-                                )
+        for filename in files:
+            filename_split = filename.split("_")
+            # Verificação inicial
+            if filename_split[1] == media_id and CLIENT_INFO[id]['serial_number_cc'] == filename_split[0] and datetime.strptime(filename_split[2].split(".")[0], "%Y-%m-%d-%H-%M-%S") > datetime.now():
+                with open("./licenses/"+filename, "rb") as f:
+                    content = f.read()
+                    content = content.split(b"-")
+                    license = base64.b64decode(content[0])
+                    signature = base64.b64decode(content[1])
+                    try:
+                        SERVER_CERT.public_key().verify(
+                            signature,
+                            license,
+                            asymmetric.padding.PSS(
+                                mgf=asymmetric.padding.MGF1(
+                                    hashes.SHA256()),
+                                salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                            ),
+                            hashes.SHA256()
+                        )
 
-                                license = json.loads(license.decode('latin'))
+                        license = json.loads(license.decode('latin'))
 
-                                if license['media_id'] == media_id and CLIENT_INFO[id]['serial_number_cc'] == license['serial_number_cc'] and datetime.strptime(license['date_of_expiration'], "%Y-%m-%d-%H-%M-%S") > datetime.now():
-                                    has_access = True
-                            except InvalidSignature:
-                                print("Invalid signature")
-                                pass
+                        if license['media_id'] == media_id and CLIENT_INFO[id]['serial_number_cc'] == license['serial_number_cc'] and datetime.strptime(license['date_of_expiration'], "%Y-%m-%d-%H-%M-%S") > datetime.now():
+                            has_access = True
+                    except InvalidSignature:
+                        print("Invalid signature")
+                        pass
     return has_access
 
-
-class MediaServer(resource.Resource):
-    isLeaf = True
-
-    def encryptor(self, algorithm, mode, key, data, encryptor=None, iv=None, last=True):
+def encryptor(algorithm, mode, key, data, encryptor=None, iv=None, last=True):
         if encryptor:
             ct = encryptor.update(data)
             if last:
                 ct += encryptor.finalize()
             return ct, encryptor, iv
         else:
-            iv = os.urandom(algorithms_options[algorithm].block_size // 8)
-            cipher = Cipher(algorithms_options[algorithm](
-                key), cipher_modes_options[mode](iv))
+            iv = os.urandom(ALGORITHMS_OPTIONS[algorithm].block_size // 8)
+            cipher = Cipher(ALGORITHMS_OPTIONS[algorithm](
+                key), CIPHER_MODES_OPTIONS[mode](iv))
             encryptor = cipher.encryptor()
             ct = encryptor.update(data)
             if last:
                 ct += encryptor.finalize()
             return ct, encryptor, iv
 
-    def decryptor(self, algorithm, mode, key, data, iv=None, decryptor=None):
-        if decryptor:
-            data = decryptor.update(data)
-            return data, decryptor
-        else:
-            cipher = Cipher(algorithms_options[algorithm](
-                key), cipher_modes_options[mode](iv))
-            decryptor = cipher.decryptor()
-            data = decryptor.update(data)
-            return data, decryptor
+def decryptor(algorithm, mode, key, data, iv=None, decryptor=None):
+    if decryptor:
+        data = decryptor.update(data)
+        return data, decryptor
+    else:
+        cipher = Cipher(ALGORITHMS_OPTIONS[algorithm](
+            key), CIPHER_MODES_OPTIONS[mode](iv))
+        decryptor = cipher.decryptor()
+        data = decryptor.update(data)
+        return data, decryptor
 
-    def digest(self, key, hash, data):
-        h = hmac.HMAC(key, hashes_options[hash]())
-        h.update(data)
-        return h.finalize()
+def generate_digest(key, hash, data):
+    h = hmac.HMAC(key, HASHES_OPTIONS[hash]())
+    h.update(data)
+    return h.finalize()
 
-    def simple_digest(self, hash, data):
-        digest = hashes.Hash(hashes_options[hash]())
-        digest.update(data)
-        return digest.finalize()
+def generate_simple_digest(hash, data):
+    digest = hashes.Hash(HASHES_OPTIONS[hash]())
+    digest.update(data)
+    return digest.finalize()
 
-    def verify_digest(self, key, hash, data, digest):
-        h = hmac.HMAC(key, hashes_options[hash]())
-        h.update(data)
-        try:
-            h.verify(digest)
-            return True
-        except InvalidSignature:
-            return False
+def verify_digest(key, hash, data, digest):
+    h = hmac.HMAC(key, HASHES_OPTIONS[hash]())
+    h.update(data)
+    try:
+        h.verify(digest)
+        return True
+    except InvalidSignature:
+        return False
+
+
+class MediaServer(resource.Resource):
+    isLeaf = True
 
     def get_auth(self, request):
         id = request.getHeader('Authorization')
         certificate = binascii.b2a_base64(
-            server_cert.public_bytes(Encoding.PEM))
+            SERVER_CERT.public_bytes(Encoding.PEM))
 
-        certificate, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], certificate)
+        certificate, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                           ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], certificate)
 
-        certificate_digest = self.digest(CLIENT_INFO[id]['digest_key'],
-                                     CLIENT_INFO[id]['options']['selected_hash'], certificate)
+        certificate_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                         CLIENT_INFO[id]['options']['selected_hash'], certificate)
 
-        response = {'certificate': certificate.decode('latin'), 'digest': certificate_digest.decode('latin'), 'iv': iv.decode('latin')}
+        response = {'certificate': certificate.decode(
+            'latin'), 'digest': certificate_digest.decode('latin'), 'iv': iv.decode('latin')}
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
         return json.dumps(response).encode('latin')
@@ -377,27 +361,26 @@ class MediaServer(resource.Resource):
         nounce = response['nounce'].encode('latin')
         iv = response['iv'].encode('latin')
 
-        if self.verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], nounce, digest):
-                nounce, decryptor_var = self.decryptor(
-                    CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], nounce, iv)
+        if verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], nounce, digest):
+            nounce, decryptor_var = decryptor(
+                CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], nounce, iv)
         else:
-            #TODO
+            # TODO
             print("ERROR")
 
         nounce = binascii.a2b_base64(nounce)
 
         signed_nounce = binascii.b2a_base64(sign(nounce))
 
-        signed_nounce, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], signed_nounce)
+        signed_nounce, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                             ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], signed_nounce)
 
-        signed_nounce_digest = self.digest(CLIENT_INFO[id]['digest_key'],
-                                     CLIENT_INFO[id]['options']['selected_hash'], signed_nounce)
+        signed_nounce_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                           CLIENT_INFO[id]['options']['selected_hash'], signed_nounce)
 
-
-
-        response = {'signed_nounce': signed_nounce.decode('latin'), 'digest': signed_nounce_digest.decode('latin'), 'iv': iv.decode('latin')}
+        response = {'signed_nounce': signed_nounce.decode(
+            'latin'), 'digest': signed_nounce_digest.decode('latin'), 'iv': iv.decode('latin')}
 
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(
@@ -412,13 +395,14 @@ class MediaServer(resource.Resource):
 
         nounce = binascii.b2a_base64(nounce)
 
-        nounce, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], nounce)
+        nounce, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                      ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], nounce)
 
-        nounce_digest = self.digest(CLIENT_INFO[id]['digest_key'],
-                                     CLIENT_INFO[id]['options']['selected_hash'], nounce)
+        nounce_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                    CLIENT_INFO[id]['options']['selected_hash'], nounce)
 
-        response = {'nounce': nounce.decode('latin'), 'digest': nounce_digest.decode('latin'), 'iv': iv.decode('latin')}
+        response = {'nounce': nounce.decode('latin'), 'digest': nounce_digest.decode(
+            'latin'), 'iv': iv.decode('latin')}
 
         request.setResponseCode(200)
         request.responseHeaders.addRawHeader(
@@ -435,20 +419,20 @@ class MediaServer(resource.Resource):
         signed_nounce = response['signed_nounce'].encode('latin')
         signed_nounce_iv = response['signed_nounce_iv'].encode('latin')
 
-        if self.verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], certificate, certificate_digest):
-                certificate, decryptor_var = self.decryptor(
-                    CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], certificate, certificate_iv)
+        if verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], certificate, certificate_digest):
+            certificate, decryptor_var = decryptor(
+                CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], certificate, certificate_iv)
         else:
-            #TODO
+            # TODO
             print("ERROR")
 
-        if self.verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], signed_nounce, signed_nounce_digest):
-                signed_nounce, decryptor_var = self.decryptor(
-                    CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], signed_nounce, signed_nounce_iv)
+        if verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], signed_nounce, signed_nounce_digest):
+            signed_nounce, decryptor_var = decryptor(
+                CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], signed_nounce, signed_nounce_iv)
         else:
-            #TODO
+            # TODO
             print("ERROR")
 
         certificate = binascii.a2b_base64(certificate)
@@ -573,10 +557,10 @@ class MediaServer(resource.Resource):
         options = json.dumps(
             CLIENT_INFO[id]['options']).encode('latin')
 
-        options, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+        options, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
                                                        ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], options)
 
-        options_digest = self.digest(CLIENT_INFO[id]['digest_key'],
+        options_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
                                      CLIENT_INFO[id]['options']['selected_hash'], options)
 
         # To use later
@@ -607,10 +591,10 @@ class MediaServer(resource.Resource):
             f.write(result)
             f.close()
 
-        result, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+        result, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
                                                       ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], result)
 
-        result_digest = self.digest(CLIENT_INFO[id]['digest_key'],
+        result_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
                                     CLIENT_INFO[id]['options']['selected_hash'], result)
 
         request.responseHeaders.addRawHeader(
@@ -641,17 +625,16 @@ class MediaServer(resource.Resource):
 
         response = json.dumps(response).encode('latin')
 
-        response, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                    ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], response)
+        response, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                        ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], response)
 
-        response_digest = self.digest(CLIENT_INFO[id]['digest_key'],
-                                    CLIENT_INFO[id]['options']['selected_hash'], response)
+        response_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                      CLIENT_INFO[id]['options']['selected_hash'], response)
 
-            
         # Return list to client
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
-        return json.dumps({'media_list': response.decode('latin'), 'digest':response_digest.decode('latin'), 'iv': iv.decode('latin')}).encode('latin')
+        return json.dumps({'media_list': response.decode('latin'), 'digest': response_digest.decode('latin'), 'iv': iv.decode('latin')}).encode('latin')
 
     # Send a media chunk to the client
 
@@ -701,6 +684,9 @@ class MediaServer(resource.Resource):
         except:
             logger.warn("Chunk format is invalid")
 
+        if chunk_id == 0:
+            CLIENT_INFO[id]['encryptor'] = None
+
         if not valid_chunk:
             request.setResponseCode(400)
             request.responseHeaders.addRawHeader(
@@ -713,52 +699,51 @@ class MediaServer(resource.Resource):
 
         # Open file, seek to correct position and return the chunk
 
-        data = SONGS[media_item['file_name']][offset:offset+CHUNK_SIZE]
+        if SONGS[media_item['file_name']]:
 
-        data = binascii.b2a_base64(data)
+            data = SONGS[media_item['file_name']][offset:offset+CHUNK_SIZE]
 
-        if chunk_id == 0:
-            CLIENT_INFO[id]['encryptor'] = None
+            data = binascii.b2a_base64(data)
 
-        encryptor_cypher = CLIENT_INFO[id]['encryptor']
+            encryptor_cypher = CLIENT_INFO[id]['encryptor']
 
-        data, encryptor_cypher, iv = self.encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
-                                                    ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
+            data, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                        ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], data, encryptor_cypher, last=chunk_id == totalchunks)
 
-        digest_data = self.digest(CLIENT_INFO[id]['digest_key'],
-                                  CLIENT_INFO[id]['options']['selected_hash'], data)
+            digest_data = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                      CLIENT_INFO[id]['options']['selected_hash'], data)
 
-        if chunk_id != totalchunks:
-            CLIENT_INFO[id]['encryptor'] = encryptor_cypher
+            if chunk_id != totalchunks:
+                CLIENT_INFO[id]['encryptor'] = encryptor_cypher
+            else:
+                CLIENT_INFO[id]['encryptor'] = None
+
+            response = {
+                'media_id': media_id,
+                'chunk': chunk_id,
+                'data': data.decode('latin'),
+                'digest': digest_data.decode('latin'),
+            }
+
+            if chunk_id == 0:
+                response['iv'] = iv.decode('latin')
+
+            if chunk_id % 5 != 0 or chunk_id == 0:
+                CLIENT_INFO[id]['message_key'] = generate_simple_digest(
+                    CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['message_key'])
+                CLIENT_INFO[id]['digest_key'] = generate_simple_digest(
+                    CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['digest_key'])
+
+            request.responseHeaders.addRawHeader(
+                b"content-type", b"application/json")
+            return json.dumps(
+                response, indent=4
+            ).encode('latin')
+
         else:
-            CLIENT_INFO[id]['encryptor'] = None
-
-        response = {
-            'media_id': media_id,
-            'chunk': chunk_id,
-            'data': data.decode('latin'),
-            'digest': digest_data.decode('latin'),
-        }
-
-        if chunk_id == 0:
-            response['iv'] = iv.decode('latin')
-
-        if chunk_id % 5 != 0 or chunk_id == 0:
-            CLIENT_INFO[id]['message_key'] = self.simple_digest(
-                CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['message_key'])
-            CLIENT_INFO[id]['digest_key'] = self.simple_digest(
-                CLIENT_INFO[id]['options']['selected_hash'], CLIENT_INFO[id]['digest_key'])
-
-        request.responseHeaders.addRawHeader(
-            b"content-type", b"application/json")
-        return json.dumps(
-            response, indent=4
-        ).encode('latin')
-
-        # File was not open?
-        request.responseHeaders.addRawHeader(
-            b"content-type", b"application/json")
-        return json.dumps({'error': 'unknown'}, indent=4).encode('latin')
+            request.responseHeaders.addRawHeader(
+                b"content-type", b"application/json")
+            return json.dumps({'error': 'unknown'}, indent=4).encode('latin')
 
     def logout(self, request):
         id = request.getHeader('Authorization')
@@ -802,7 +787,7 @@ class MediaServer(resource.Resource):
             else:
                 request.responseHeaders.addRawHeader(
                     b"content-type", b'text/plain')
-                return b'Methods: /api/protocols /api/list /api/download'
+                return b'GET Methods: /api/protocols /api/list /api/download /api/key /api/digest_key /api/logout /api/get_music /api/auth /api/cc_auth'
 
         except Exception as e:
             logger.exception(e)
@@ -833,7 +818,7 @@ class MediaServer(resource.Resource):
             else:
                 request.responseHeaders.addRawHeader(
                     b"content-type", b'text/plain')
-                return b'Methods: /api/protocols /api/key'
+                return b'POST Methods: /api/protocols /api/key /api/digest_key /api/auth /api/cc_auth'
 
         except Exception as e:
             logger.exception(e)
@@ -842,14 +827,15 @@ class MediaServer(resource.Resource):
                 b"content-type", b"text/plain")
             return b''
 
+print("Running initial tasks")
+
+SERVER_CERT = load_cert('../server_certs/server-localhost.crt')
+get_chain()
+get_crls()
+decrypt_catalog()
 
 print("Server started")
 print("URL is: http://IP:8080")
-
-server_cert = load_cert('../server_certs/server-localhost.crt')
-get_chain()
-get_crl()
-decrypt_catalog("./encrypted_catalog/")
 
 s = server.Site(MediaServer())
 reactor.listenTCP(8080, s)

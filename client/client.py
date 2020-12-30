@@ -9,7 +9,9 @@ import uuid
 import base64
 import PyKCS11
 import random
+import time
 from datetime import datetime
+
 from cryptography.hazmat.primitives import asymmetric
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -61,12 +63,11 @@ class Client:
         ''' Verificação da validade do certificado do servidor de acordo com a data, propósito e assinatura, dando o ceritficado da entidade emissora (Root CA) '''
         if cert.issuer == issuer_cert.issuer:
             if self.verify_date(cert) and self.verify_purpose(cert) and self.verify_signatures(cert, issuer_cert):
-                print("All good")
                 return True
             else:
-                print("Can't verify certificate integraty")
+                print('\033[31m'+"Can't verify certificate integrity"+'\033[0m')
         else:
-            print("Can't chain to root CA")
+            print('\033[31m'+"Can't chain to Root CA"+'\033[0m')
         return False
 
     def verify_purpose(self, cert):
@@ -337,10 +338,14 @@ class Client:
 
             nounce = binascii.a2b_base64(nounce)
 
-            mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
+            try:
+                mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
 
-            signed_nounce = bytes(self.session_cc.sign(
-                self.private_key_cc, nounce, mechanism))
+                signed_nounce = bytes(self.session_cc.sign(
+                    self.private_key_cc, nounce, mechanism))
+            except:
+                print('\033[31m'+"Unable to sign with citizen card"+'\033[0m')
+                quit()
         else:
             print('\033[31m'+"Error getting nounce for user autentication"+'\033[0m')
             quit()
@@ -397,7 +402,7 @@ class Client:
 
                 # Present a simple selection menu
                 idx = 0
-                print("MEDIA CATALOG\n")
+                print("\nMEDIA CATALOG")
                 for item in media_list:
                     print(f'{idx} - {media_list[idx]["name"]} - Access: {media_list[idx]["has_access"]}')
                 print("----")
@@ -421,7 +426,9 @@ class Client:
                 if not media_list[selection]['has_access']:
                     req = requests.get(f'{SERVER_URL}/api/get_music?id={media_list[selection]["id"]}', headers={"Authorization": self.id})
                     if req.status_code == 200:
-                        print('\033[1m'+f"Access granted to the song {media_list[selection]['name']} for 1 hour"+'\033[0m')
+                        print()
+                        print('\033[1m'+f"Access granted to the song \'{media_list[selection]['name']}\' for 1 hour"+'\033[0m')
+                        print()
                         response = req.json()
                         digest = response['digest'].encode('latin')
                         license = response['license'].encode('latin')
@@ -461,6 +468,7 @@ class Client:
                     ['ffplay', '-i', '-'], stdin=subprocess.PIPE)
 
             decryptor_var = None
+            kill_needed = True
 
             # Get data from server and send it to the ffplay stdin through a pipe
             for chunk_id in range(media_item['chunks']):
@@ -503,7 +511,11 @@ class Client:
                 try:
                     proc.stdin.write(data)
                 except:
+                    kill_needed = False
                     break
+            if kill_needed:
+                time.sleep(5)
+                proc.kill()
 
                 
 
