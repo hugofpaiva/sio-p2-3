@@ -95,15 +95,66 @@
 \clearpage
 
 \section{Introdução}
-\par Este trabalho projeto tem como objetivo o desenvolvimento de mecanismos de proteção de dados e comunicações num serviço cliente servidor.
+\par Este trabalho tem como objetivo o desenvolvimento de mecanismos de proteção de dados e comunicações num serviço de reprodução de música cliente-servidor, permitindo uma comunicação segura. 
 
-\par Neste sentido, foi fornecido a estrutura base do serviço com algumas funções relativas aos protocolos de comunicação desprotegidos já implementadas e coube-nos a nós desenvolver as capacidades de proteção da troca de informação nomeadamente através de encriptação das comunicações, com protocolos previamente acordados entre o cliente e o servidor, e do repositório de músicas, bem como os processos inversos de desencriptação consequentes e ainda os protocolos de autentificação, e troca de chaves assimétricas tanto do cliente como do servidor. 
+\par Neste sentido, foi fornecida a estrutura base do serviço com algumas funções relativas aos protocolos de comunicação desprotegidos já implementadas, permitindo a reprodução de músicas sem qualquer tipo de segurança ou autenticação, tendo sido necessário desenvolver as capacidades de proteção da troca de informação, de autenticação, etc.
 
-\par Este relatório visa explicar os protocolos escolhidos para cada problema,o porque dessas escolhas e a forma como os mesmos foram implementados.
+\par Este relatório visa explicar os protocolos escolhidos para cada problema, a razão das escolhas e a forma como os mesmos foram implementados, focando-se na descrição da implementação relativa à segurança.
+\clearpage
+
+\section{Funcionamento Geral}
+
+\par De seguida encontra-se na forma de diagrama o funcionamento geral da solução desenvolvida. Cada secção do mesmo será discutida posteriormente.
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/1.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/2.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/3.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/4.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/5.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/6.png}
+\end{figure}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/7.png}
+        \caption{Funcionamento geral da solução}
+\end{figure}
+
 \clearpage
 
 \section{Cifra das comunicações}
 \subsection{Protocolo}
+
+\subsubsection{Diagrama}
+
+\begin{figure}[!h]
+        \centering
+        \includegraphics[width=\textwidth]{images/1.png}
+\end{figure}
+
+\subsubsection{Implementação}
  \par Com o objetivo de cifrar as comunicações cliente-servidor, foi definido um protocolo que dita qual o tipo de cifra, o algoritmo que a mesma usa, o modo de cifra e qual o algoritmo de \textit{hash} utilizado para gerar assinaturas e outros dados.
 
 \par Optando pela Cifra Simétrica para as comunicações, foi escolhido um leque de opções de entre alguns modos de cifra, algoritmos de \textit{hash} e algoritmos de cifra que posteriormente é utilizado para escolher de forma aleatória um deles para utilização na comunicação. As opções disponíveis são:
@@ -117,7 +168,9 @@
     
  \end{itemize}
  
- \par Em ambos as aplicações, Cliente e Servidor, o leque de opções é definido da seguinte forma:
+ \clearpage
+ 
+ \par Em ambas as aplicações, Cliente e Servidor, o leque de opções é definido da seguinte forma:
  
   \begin{figure}[!h]
         \centering
@@ -149,7 +202,18 @@
         \caption{Informação do protocolo guardada no cliente}
 \end{figure}
 
+\vspace*{3cm}
+
 \subsection{Troca de chaves}
+
+\subsubsection{Diagrama}
+\vspace*{1cm}
+    \begin{figure}[!h]
+            \centering
+            \includegraphics[width=375]{images/2.png}
+    \end{figure}
+
+\subsubsection{Implementação}
 
 \par Para ser possível cifrar as mensagens após a troca do protocolo é necessário a geração e troca de chaves simétricas. Como a comunicação está em aberto foi necessário recorrer a um algoritmo que permite a geração de um segredo partilhado em um canal inseguro, como é o caso, sem problemas de segurança, tal como foi abordado nas aulas teóricas com o algoritmo \textit{Diffie-Hellman}. Para evitar os problemas de um ataque \textit{Man-In-The-Middle} que este algoritmo tem, foi utilizada a forma efêmera do mesmo, disponível no \textit{cryptography.io}.
 
@@ -250,6 +314,8 @@
 
 \par Para aumentar a segurança das comunicações e evitar a reutilização de chaves, foram também implementadas duas soluções:
 
+\subsection{Efemeridade das chaves}
+
 \begin{itemize}
     
 \item  \textbf{A primeira incide na implementação da efemeridade das chaves}. Para isto, sempre que o cliente termina a aplicação, novamente com recurso ao \textit{uuid} gerado anteriormente, é enviado um pedido ao servidor, onde são eliminadas todas as informações associadas ao cliente geradas nesta sessão, com excepção das licenças, que serão discutidas posteriormente:
@@ -266,6 +332,7 @@
         \caption{Informação associada ao cliente eliminada ao receber o pedido de \textit{logout} no servidor}
 \end{figure}
 
+\subsection{Rotação de chaves}
 
 \item \textbf{A segunda incide na rotação das chaves} utilizadas na cifra à medida que o cliente obtém novos blocos da música. Para tal, foi utilizada uma solução baseada no algoritmo \textbf{\textit{Double Ratchet}} utilizado em aplicações como o \textit{Signal}. Em suma, o funcionamento deste algoritmo dita que cada mensagem tem de ter uma chave diferente, utilizando para o efeito funções de derivação de chaves, evitando a possibilidade de a partir de uma chave, gerar chaves anteriores devido às propriedades destas funções. Além disso, sempre que possível, deverá fazer-se uma nova troca de chaves utilizando o algoritmo \textit{Diffie-Helman} já abordado anteriormente. Isto é feito para evitar o caso em que alguma chave é interceptada e tem-se acesso à função de derivação, o que permitiria gerar todas as chaves a partir daí.
 
@@ -297,6 +364,16 @@
 
 \subsection{Autenticação do Servidor}
 
+\subsubsection{Diagrama}
+    \begin{figure}[!h]
+            \centering
+            \includegraphics[width=370]{images/4.png}
+    \end{figure}
+
+\subsubsection{Implementação}
+
+\subsubsection{Infraestrutura de Chaves Públicas}
+
 \par Para autenticar o servidor foi criada uma Infraestrutura de chaves públicas personalizada para este caso. A base de dados utilizada no programa \textit{xca} para gerar toda esta Infraestrutura encontra-se na pasta \textit{server\_certs} bem como todos os certificados e chaves privadas geradas para o efeito. Em suma, foi gerado o seguinte:
 
 \begin{itemize}
@@ -305,6 +382,8 @@
      \item \textbf{Certificado do Servidor} assinado pela \textit{Root CA}
      \item \textbf{Chave privada do Certificado do Servidor}
 \end{itemize}
+
+\subsubsection{Validação da Cadeia de Certificação}
 
 \par Com a cifra das comunicações definida e estes certificados gerados, o próximo passo do cliente é autenticar o servidor. Para tal, o cliente faz um pedido ao servidor para obter o certificado do servidor e validar a cadeia de certificação.
 
@@ -340,6 +419,8 @@
 
 \clearpage
 
+\subsubsection{Autenticação Desafio-Resposta}
+
 \par Para o resto da autenticação do servidor recorreu-se ao conjunto de protocolos de segurança de comunicações, \textbf{Autenticação Desafio-Resposta}, abordado nas aulas teóricas. No fundo, o funcionamento assenta no envio de um \textbf{Desafio} por uma entidade, sendo que a outra entidade terá de enviar uma \textbf{Resposta Válida} para se autenticar.
 
 \par Utilizando a Autenticação Desafio-Resposta, a autenticação do servidor é terminada com o envio de uma \textit{nounce}, um número arbitrário apenas utilizado uma vez, por parte do cliente, representando o \textbf{Desafio}, e o servidor por sua vez responde com essa \textit{nounce} assinada com a sua chave privada, de modo a que esta assinatura seja validada por parte do cliente, autenticando o servidor:
@@ -366,6 +447,19 @@
 
 \subsection{Autenticação do Cliente}
 
+\subsubsection{Diagrama}
+\vspace*{1cm}
+    \begin{figure}[!h]
+            \centering
+            \includegraphics[width=375]{images/5.png}
+    \end{figure}
+
+\clearpage
+
+\subsubsection{Implementação}
+
+\textbf{Leitura do Cartão de Cidadão}
+
 \par Para o servidor autenticar o cliente, escolheu-se utilizar um \textit{hardware token}, o cartão de cidadão. Ao iniciar a aplicação do cliente é verificada a presença de um cartão de cidadão e, caso esteja presente, é feito o carregamento inicial de diversos dados usados posteriormente. Isto tudo acontece na função \textit{get\_cc}:
 
 \begin{figure}[!h]
@@ -377,6 +471,8 @@
 \par É guardado em memória o certificado relativo ao cartão de cidadão, a sessão, a chave privada e o número do cartão.
 
 \clearpage
+
+\textbf{Autenticação Desafio-Resposta e Validação da Cadeia de Certificação}
 
 \par Com isto feito, já depois da autenticação do servidor, volta-se a utilizar a Autenticação Desafio-Resposta, referida anteriormente, para o servidor validar o cliente. Para tal, é feito um pedido ao servidor de modo a obter uma \textit{nounce} gerada pelo mesmo, sendo esta assinada com a chave privada do cartão de cidadão no cliente, colocando-se as credenciais necessárias para tal. Com a \textit{nounce} assinada, é enviado ao servidor o certificado do cartão de cidadão e a \textit{nounce} assinada de modo a permitir a autenticação do cliente.
 
@@ -427,6 +523,17 @@
 \clearpage
 
 \subsection{Licenças e Autenticação das mesmas}
+
+\subsubsection{Diagrama}
+\vspace*{1cm}
+    \begin{figure}[!h]
+            \centering
+            \includegraphics[width=375]{images/8.png}
+    \end{figure}
+
+\clearpage
+
+\subsubsection{Implementação}
 
 \par Ultrapassadas todas as medidas de seguranças mencionadas anteriormente, o programa pode finalmente mostrar ao cliente as músicas disponíveis e, caso não tenha acesso, permitir a compra de músicas através da geração de uma licença com tempo limitado.
 
@@ -507,7 +614,7 @@
         \caption{Processo de encriptação das músicas.}
 \end{figure}
 
-\par Posteriormente é gerado um documento de texto, \textit{file\_info.txt} no diretório \textit{/server}, que para cada música contém o nome do ficheiro, a chave de encriptação cifrada através da chave pública do servidor e o \textit{iv} utilizados na cifra simétrica dessa música. Desta forma foi utilizada cifra simétrica para cifrar os ficheiros e cifra assimétrica para cifra a chave simétrica, juntando o melhor dos dois mundos.
+\par Posteriormente é gerado um documento de texto \textit{file\_info.txt} no diretório \textit{/server} que, para cada música, contém o nome do ficheiro, a chave de encriptação cifrada através da chave pública do servidor e o \textit{iv} utilizados na cifra simétrica dessa música. Desta forma foi utilizada cifra simétrica para cifrar os ficheiros e cifra assimétrica para cifra a chave simétrica, juntando o melhor dos dois mundos.
 
 \begin{figure}[!h]
         \centering
@@ -531,7 +638,9 @@
 
 \section{Conclusão}
 
-\par Bla bla
+\par Para terminar, pensa-se que, de acordo com as metas estabelecidas pelo docente, o trabalho foi bem sucedido. Desde a comunicação segura, até às diversas autenticações, foi possível solidificar e aprofundar o conhecimento adquirido durante as aulas práticas e teóricas.
+
+\par A implementação baseou-se nas questões relativas à segurança pelo que algumas verificações menos importantes e/ou manutenção de código limpo podem estar em falta.
 
 \clearpage
 
