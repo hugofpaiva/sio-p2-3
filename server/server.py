@@ -504,8 +504,21 @@ class MediaServer(resource.Resource):
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
-        response = {'key': binascii.b2a_base64(
-            serialized_public).decode('latin')}
+        serialized_public = binascii.b2a_base64(serialized_public)
+
+        if 'message_key' in CLIENT_INFO[id] and 'digest_key' in CLIENT_INFO[id]:
+            serialized_public, encryptor_cypher, iv = encryptor(CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                                                      ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], serialized_public)
+
+            serialized_public_digest = generate_digest(CLIENT_INFO[id]['digest_key'],
+                                    CLIENT_INFO[id]['options']['selected_hash'], serialized_public)
+
+            response = {'key': serialized_public.decode('latin'), 'digest': serialized_public_digest.decode('latin'), 'iv': iv.decode('latin') }
+
+        else:
+            response = {'key': serialized_public.decode('latin')}
+
+        
         request.responseHeaders.addRawHeader(
             b"content-type", b"application/json")
         return json.dumps(response).encode('latin')
@@ -513,14 +526,31 @@ class MediaServer(resource.Resource):
     def post_key(self, request):
         ''' Receção de chave pública do cliente para Diffie Hellman '''
         response = json.loads(request.content.read())
+        id = request.getHeader('Authorization')
 
-        client_public_key = binascii.a2b_base64(
-            response['key'].encode('latin'))
+        if 'message_key' in CLIENT_INFO[id] and 'digest_key' in CLIENT_INFO[id]:
+            digest = response['digest'].encode('latin')
+            client_public_key = response['key'].encode('latin')
+            iv = response['iv'].encode('latin')
+
+            if verify_digest(CLIENT_INFO[id]['digest_key'], CLIENT_INFO[id]['options']['selected_hash'], client_public_key, digest):
+                client_public_key, decryptor_var = decryptor(
+                    CLIENT_INFO[id]['options']['selected_algorithm'], CLIENT_INFO[id]
+                    ['options']['selected_mode'], CLIENT_INFO[id]['message_key'], client_public_key, iv)
+                client_public_key = binascii.a2b_base64(client_public_key)
+            else:
+                print('\033[31m'+f"Data integrity of communication violated for user {id}"+'\033[0m')
+                request.setResponseCode(401)
+                request.responseHeaders.addRawHeader(b"content-type", b"text/plain")
+                return b''
+
+        else:
+            client_public_key = binascii.a2b_base64(
+                response['key'].encode('latin'))
 
         loaded_public_key = serialization.load_pem_public_key(
             client_public_key,)
-
-        id = request.getHeader('Authorization')
+ 
 
         shared_key = None
 

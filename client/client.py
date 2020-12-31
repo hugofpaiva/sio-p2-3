@@ -499,7 +499,7 @@ class Client:
 
                 data = binascii.a2b_base64(data)
 
-                if chunk_id % 5 == 0:
+                if chunk_id % 5 == 0 and chunk_id != 0:
                     self.dh_digest_key()
                     self.dh_message_key()
                 else:
@@ -547,19 +547,36 @@ class Client:
         if req.status_code == 200:
             response = req.json()
 
-            server_public_key = binascii.a2b_base64(
-                response['key'].encode('latin'))
+            if self.message_key and self.digest_key:
+                digest = response['digest'].encode('latin')
+                server_public_key = response['key'].encode('latin')
+                iv = response['iv'].encode('latin')
+
+                if self.verify_digest(self.digest_key, self.selected_hash, server_public_key, digest):
+                    server_public_key, decryptor_var = self.decryptor(
+                    self.selected_algorithm, self.selected_mode, self.message_key, server_public_key, iv)
+
+                    server_public_key = binascii.a2b_base64(server_public_key)
+                else:
+                    print("Neste")
+                    print('\033[31m'+"Data integrity of communication violated"+'\033[0m')
+                    quit()
+            else:
+                server_public_key = binascii.a2b_base64(
+                    response['key'].encode('latin'))
 
             loaded_public_key = serialization.load_pem_public_key(
                 server_public_key,)
 
             shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
-            self.digest_key = HKDF(
+            digest_key = HKDF(
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=None,
                 info=b'handshake data',).derive(shared_key)
+
+            
         else:
             print('\033[31m'+"Error trading DH symmetric keys for communication digests"+'\033[0m')
             quit()
@@ -569,9 +586,18 @@ class Client:
         serialized_public = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        
+        serialized_public = binascii.b2a_base64(serialized_public)
 
-        response = {'key': binascii.b2a_base64(
-            serialized_public).decode('latin').strip()}
+        if self.message_key and self.digest_key:
+            serialized_public, encryptor_cypher, iv = self.encryptor(self.selected_algorithm, self.selected_mode, self.message_key, serialized_public)
+
+            serialized_public_digest = self.digest(self.digest_key,
+                                     self.selected_hash, serialized_public)
+
+            response = {'key': serialized_public.decode('latin'), 'digest': serialized_public_digest.decode('latin'), 'iv': iv.decode('latin')}
+        else:
+            response = {'key': serialized_public.decode('latin').strip()}
 
         req = requests.post(f'{SERVER_URL}/api/digest_key', data=json.dumps(
             response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
@@ -579,6 +605,7 @@ class Client:
         if req.status_code != 200:
             print('\033[31m'+"Error trading DH symmetric keys for communication digests"+'\033[0m')
             quit()
+        self.digest_key = digest_key
 
     def dh_message_key(self):
         ''' Troca de novas chaves simétricas para cifrar as comunicações '''
@@ -588,15 +615,28 @@ class Client:
         if req.status_code == 200:
             response = req.json()
 
-            server_public_key = binascii.a2b_base64(
-                response['key'].encode('latin'))
+            if self.message_key and self.digest_key:
+                digest = response['digest'].encode('latin')
+                server_public_key = response['key'].encode('latin')
+                iv = response['iv'].encode('latin')
+                if self.verify_digest(self.digest_key, self.selected_hash, server_public_key, digest):
+                    server_public_key, decryptor_var = self.decryptor(
+                    self.selected_algorithm, self.selected_mode, self.message_key, server_public_key, iv)
+
+                    server_public_key = binascii.a2b_base64(server_public_key)
+                else:
+                    print('\033[31m'+"Data integrity of communication violated"+'\033[0m')
+                    quit()
+            else:
+                server_public_key = binascii.a2b_base64(
+                    response['key'].encode('latin'))
 
             loaded_public_key = serialization.load_pem_public_key(
                 server_public_key,)
 
             shared_key = private_key.exchange(ec.ECDH(), loaded_public_key)
 
-            self.message_key = HKDF(
+            message_key = HKDF(
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=None,
@@ -611,8 +651,17 @@ class Client:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
-        response = {'key': binascii.b2a_base64(
-            serialized_public).decode('latin').strip()}
+        serialized_public = binascii.b2a_base64(serialized_public)
+
+        if self.message_key and self.digest_key:
+            serialized_public, encryptor_cypher, iv = self.encryptor(self.selected_algorithm, self.selected_mode, self.message_key, serialized_public)
+
+            serialized_public_digest = self.digest(self.digest_key,
+                                     self.selected_hash, serialized_public)
+
+            response = {'key': serialized_public.decode('latin'), 'digest': serialized_public_digest.decode('latin'), 'iv': iv.decode('latin')}
+        else:
+            response = {'key': serialized_public.decode('latin').strip()}
 
         req = requests.post(f'{SERVER_URL}/api/key', data=json.dumps(
             response).encode('latin'), headers={"content-type": "application/json", "Authorization": self.id})
@@ -620,6 +669,7 @@ class Client:
         if req.status_code != 200:
             print('\033[31m'+"Error trading DH symmetric keys for communication"+'\033[0m')
             quit()
+        self.message_key = message_key
 
     def digest(self, key, hash, data):
         ''' Geração de digest para verificação de integridade com recurso a HMAC '''
