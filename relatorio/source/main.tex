@@ -314,7 +314,7 @@
 
 \par Para aumentar a segurança das comunicações e evitar a reutilização de chaves, foram também implementadas duas soluções:
 
-\subsection{Efemeridade das chaves}
+\subsubsection{Efemeridade das chaves}
 
 \begin{itemize}
     
@@ -332,7 +332,7 @@
         \caption{Informação associada ao cliente eliminada ao receber o pedido de \textit{logout} no servidor}
 \end{figure}
 
-\subsection{Rotação de chaves}
+\subsubsection{Rotação de chaves}
 
 \item \textbf{A segunda incide na rotação das chaves} utilizadas na cifra à medida que o cliente obtém novos blocos da música. Para tal, foi utilizada uma solução baseada no algoritmo \textbf{\textit{Double Ratchet}} utilizado em aplicações como o \textit{Signal}. Em suma, o funcionamento deste algoritmo dita que cada mensagem tem de ter uma chave diferente, utilizando para o efeito funções de derivação de chaves, evitando a possibilidade de a partir de uma chave, gerar chaves anteriores devido às propriedades destas funções. Além disso, sempre que possível, deverá fazer-se uma nova troca de chaves utilizando o algoritmo \textit{Diffie-Helman} já abordado anteriormente. Isto é feito para evitar o caso em que alguma chave é interceptada e tem-se acesso à função de derivação, o que permitiria gerar todas as chaves a partir daí.
 
