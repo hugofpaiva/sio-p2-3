@@ -438,11 +438,28 @@ class Client:
                             license, decryptor_var = self.decryptor(
                                 self.selected_algorithm, self.selected_mode, self.message_key, license, iv)
                             decoded_license = license.split(b"-")
+                            signature = base64.b64decode(decoded_license[1])
                             decoded_license = base64.b64decode(decoded_license[0])
-                            decoded_license = json.loads(decoded_license.decode('latin'))
-                            with open("./licenses/"+str(decoded_license['serial_number_cc'])+"_"+str(decoded_license['media_id'])+"_"+str(decoded_license['date_of_expiration'])+".txt", "wb") as f:
-                                f.write(license)
-                                f.close()
+                            
+                            try:
+                                # Verificação da assinatura
+                                self.server_cert.public_key().verify(
+                                    signature,
+                                    decoded_license,
+                                    asymmetric.padding.PSS(
+                                        mgf=asymmetric.padding.MGF1(
+                                            primitives.hashes.SHA256()),
+                                        salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                                    ),
+                                    primitives.hashes.SHA256()
+                                )
+                                decoded_license = json.loads(decoded_license.decode('latin'))
+                                with open("./licenses/"+str(decoded_license['serial_number_cc'])+"_"+str(decoded_license['media_id'])+"_"+str(decoded_license['date_of_expiration'])+".txt", "wb") as f:
+                                    f.write(license)
+                                    f.close()
+                            except InvalidSignature:
+                                print('\033[31m'+"Music license is not valid!"+'\033[0m')
+                                quit()
                         else:
                             print('\033[31m'+"Data integrity of communication violated"+'\033[0m')
                             quit()
@@ -558,7 +575,6 @@ class Client:
 
                     server_public_key = binascii.a2b_base64(server_public_key)
                 else:
-                    print("Neste")
                     print('\033[31m'+"Data integrity of communication violated"+'\033[0m')
                     quit()
             else:
