@@ -61,7 +61,7 @@ class Client:
 
     def full_cert_verify(self, cert, issuer_cert):
         ''' Verificação da validade do certificado do servidor de acordo com a data, propósito e assinatura, dando o ceritficado da entidade emissora (Root CA) '''
-        if cert.issuer == issuer_cert.issuer:
+        if cert.issuer == issuer_cert.issuer and issuer_cert.issuer == issuer_cert.subject:
             if self.verify_date(cert) and self.verify_purpose(cert) and self.verify_signatures(cert, issuer_cert):
                 return True
             else:
