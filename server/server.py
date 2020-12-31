@@ -259,34 +259,35 @@ def license_check(media_id, user_id):
     has_access = False
     for root, dirs, files in os.walk("./licenses/"):
         for filename in files:
-            filename_split = filename.split("_")
-            # Verificação inicial com o nome do ficheiro
-            if filename_split[1] == media_id and CLIENT_INFO[user_id]['serial_number_cc'] == filename_split[0] and datetime.strptime(filename_split[2].split(".")[0], "%Y-%m-%d-%H-%M-%S") > datetime.now():
-                with open("./licenses/"+filename, "rb") as f:
-                    content = f.read()
-                    content = content.split(b"-")
-                    license = base64.b64decode(content[0])
-                    signature = base64.b64decode(content[1])
-                    try:
-                        # Verificação da assinatura
-                        SERVER_CERT.public_key().verify(
-                            signature,
-                            license,
-                            asymmetric.padding.PSS(
-                                mgf=asymmetric.padding.MGF1(
-                                    hashes.SHA256()),
-                                salt_length=asymmetric.padding.PSS.MAX_LENGTH
-                            ),
-                            hashes.SHA256()
-                        )
+            if filename != '.DS_Store':
+                filename_split = filename.split("_")
+                # Verificação inicial com o nome do ficheiro
+                if filename_split[1] == media_id and CLIENT_INFO[user_id]['serial_number_cc'] == filename_split[0] and datetime.strptime(filename_split[2].split(".")[0], "%Y-%m-%d-%H-%M-%S") > datetime.now():
+                    with open("./licenses/"+filename, "rb") as f:
+                        content = f.read()
+                        content = content.split(b"-")
+                        license = base64.b64decode(content[0])
+                        signature = base64.b64decode(content[1])
+                        try:
+                            # Verificação da assinatura
+                            SERVER_CERT.public_key().verify(
+                                signature,
+                                license,
+                                asymmetric.padding.PSS(
+                                    mgf=asymmetric.padding.MGF1(
+                                        hashes.SHA256()),
+                                    salt_length=asymmetric.padding.PSS.MAX_LENGTH
+                                ),
+                                hashes.SHA256()
+                            )
 
-                        license = json.loads(license.decode('latin'))
-                        # Verificação da própria licença
-                        if license['media_id'] == media_id and CLIENT_INFO[user_id]['serial_number_cc'] == license['serial_number_cc'] and datetime.strptime(license['date_of_expiration'], "%Y-%m-%d-%H-%M-%S") > datetime.now():
-                            has_access = True
-                            return has_access
-                    except InvalidSignature:
-                        pass
+                            license = json.loads(license.decode('latin'))
+                            # Verificação da própria licença
+                            if license['media_id'] == media_id and CLIENT_INFO[user_id]['serial_number_cc'] == license['serial_number_cc'] and datetime.strptime(license['date_of_expiration'], "%Y-%m-%d-%H-%M-%S") > datetime.now():
+                                has_access = True
+                                return has_access
+                        except InvalidSignature:
+                            pass
     return has_access
 
 def encryptor(algorithm, mode, key, data, encryptor=None, iv=None, last=True):
