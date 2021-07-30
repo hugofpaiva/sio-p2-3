@@ -70,6 +70,10 @@ Neste sentido, foi fornecida a estrutura base do serviço com algumas funções 
 
 Todos os detalhes podem ser encontrados no [Relatório](/relatorio/SIO_P2_3.pdf).
 
+## Nota
+
+Classificação referente ao trabalho de grupo de **4.61** valores em 5.
+
 
 
 
